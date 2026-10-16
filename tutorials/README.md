@@ -131,6 +131,19 @@ ActionRecord -> SegmentInfo -> LabelingAgent -> loaders -> VLMCoCAgent/DummyWrap
 `OpenAIWrapper`。前面的事件、时间戳、视频帧、meta-action、messages 和
 `OutputSchema` 都保持不变。
 
+正式批量标注可以使用仓库提供的 `scripts/run_coc_labeling.sh`。它集中填写了本机
+PAI 数据路径，支持 `qwen3.5_35b` 和 GPT 后端；GPT 模式会在脚本内部读取
+`~/.config/alpamayo-coc/openai_api.yaml`，不需要手动 `export`：
+
+```bash
+scripts/run_coc_labeling.sh --model qwen3.5_35b --exp-name pai_qwen35_full
+scripts/run_coc_labeling.sh --model gpt-6.1-sol --exp-name pai_gpt61_full
+```
+
+第一次正式运行建议先用 `--filter '[gentle_acceleration]'` 做小范围检查。完整运行会
+处理 keyframe 清单中的全部事件；GPT API 会按图片和文本输入量收费。脚本默认不保存
+裁剪视频，并默认去重相同 clip/event frame，结果仍写入 `experiments/`。
+
 最后可以回到第 09 课重新查看这份 YAML。
 
 ## 本机数据和模型

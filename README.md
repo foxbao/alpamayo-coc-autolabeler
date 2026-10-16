@@ -359,6 +359,23 @@ export HF_HOME=/path/to/hf-cache
 
 Run CoC autolabeling. For example:
 
+For the PAI paths used in the local tutorial setup, the shorter wrapper below
+replaces the long Hydra command. It supports both local Qwen and GPT API runs:
+
+```bash
+scripts/run_coc_labeling.sh --model qwen3.5_35b --exp-name pai_qwen35_full
+scripts/run_coc_labeling.sh --model gpt-6.1-sol --exp-name pai_gpt61_full
+```
+
+GPT mode reads `~/.config/alpamayo-coc/openai_api.yaml` and configures the API
+credentials inside the launcher. Use `--dry-run` to inspect the resolved command,
+and `--filter '[gentle_acceleration]'` for a small first run. Override the local
+paths with `DATA_DIR`, `RUN_ROOT`, `MODEL_CACHE_DIR`, or `PYTHON_BIN` when needed.
+The wrapper builds a temporary globally deduplicated segment index before launching,
+because different action buckets can occasionally reference the same clip and event frame.
+
+The equivalent direct command is:
+
 ```bash
 export MODEL_CACHE_DIR=/workspace/hf-cache
 python -m coc_labeling.data_labeling \
