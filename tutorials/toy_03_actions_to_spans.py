@@ -53,7 +53,16 @@ for span in spans:
     print(span)
 
 # 只选择持续至少两帧且值得解释的 meta-action；Maintain Speed 暂时作为背景。
-interesting = {"Strong Deceleration", "Stop", "Acceleration"}
+# toy_10 使用生产源码中的细分名称；这里也列出相同类别的 V2 写法。
+interesting = {
+    "Strong Deceleration",
+    "Stop",
+    "Acceleration",
+    "GentleAcceleration",
+    "StrongAcceleration",
+    "GentleDeceleration",
+    "StrongDeceleration",
+}
 selected = [
     span
     for span in spans

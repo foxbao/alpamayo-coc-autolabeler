@@ -1,0 +1,9 @@
+# Copy this file to ~/.config/alpamayo-coc/openai_api.yaml and fill it locally.
+# Never commit a real API key.
+api_key: "sk-..."
+base_url: "https://api.openai.com/v1"
+model: "gpt5.5"
+
+# Optional fields for accounts that use organization/project routing:
+# organization: "org-..."
+# project: "proj_..."

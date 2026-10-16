@@ -32,7 +32,7 @@ def get_text(messages: list[dict[str, object]]) -> str:
     return "\n".join(text_parts)
 
 
-def fake_vlm(messages: list[dict[str, object]]) -> dict[str, str]:
+def fake_vlm(messages: list[dict[str, object]]) -> dict[str, dict[str, str]]:
     """根据动作先验返回固定结构；它不具备真实视觉理解能力。"""
     text = get_text(messages)
     has_video = any(message["m_type"] == "video" for message in messages)
@@ -40,12 +40,16 @@ def fake_vlm(messages: list[dict[str, object]]) -> dict[str, str]:
         raise ValueError("the VLM input must contain video evidence")
     if "Strong Deceleration" in text:
         return {
-            "ego_behavior": "Strong Deceleration",
-            "explanation": "The ego vehicle slows after the event anchor.",
+            "ego_behavior_schema": {
+                "effect_on_ego_behavior": "The ego vehicle slows after the event anchor."
+            }
         }
     return {
-        "ego_behavior": "Maintain Speed",
-        "explanation": "No strong behavior change appears in the toy evidence.",
+        "ego_behavior_schema": {
+            "effect_on_ego_behavior": (
+                "The ego vehicle continues steadily through the observed scene."
+            )
+        }
     }
 
 

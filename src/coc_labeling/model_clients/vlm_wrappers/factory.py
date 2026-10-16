@@ -26,6 +26,8 @@ MODEL_WRAPPER_REGISTRY: dict[str, Type] = {
     "dummy": DummyWrapper,
     "gpt5": OpenAIWrapper,
     "gpt5.5": OpenAIWrapper,
+    "gpt6.1": OpenAIWrapper,
+    "gpt-6.1-sol": OpenAIWrapper,
     "qwen3_vl_235b_awq": QwenWrapper,
     "qwen3.5_35b": QwenWrapper,
     "qwen3.5_397b_fp8": QwenWrapper,

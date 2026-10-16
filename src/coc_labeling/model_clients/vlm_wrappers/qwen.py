@@ -173,7 +173,9 @@ class QwenWrapper(BaseWrapper):
         if model_name not in QWEN_MODEL_SPECS:
             raise ValueError(f"Invalid model: {model_name}")
 
-        max_model_len = 128000
+        # Allow smaller local deployments to cap KV-cache reservation without
+        # changing the default behavior used by the published configs.
+        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "128000"))
         cache_folder, hf_model_id, quantization = QWEN_MODEL_SPECS[model_name]
         cache_dir_env = os.environ.get("MODEL_CACHE_DIR") or os.environ.get("HF_HOME") or "./models"
         model_cache_dir = Path(cache_dir_env).expanduser().resolve()

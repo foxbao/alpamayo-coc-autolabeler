@@ -12,11 +12,16 @@ for index in range(34, len(actions)):
     actions[index] = "Stop"
 
 # 事件锚点来自 meta-action 的起始帧，而不是随便挑一个数字。
-event_start = next(
-    index
-    for index in range(1, len(actions))
-    if actions[index] != actions[index - 1] and actions[index] == "Strong Deceleration"
-)
+event_start = None
+for index in range(1, len(actions)):
+    action_changed = actions[index] != actions[index - 1]
+    is_target_action = actions[index] == "Strong Deceleration"
+    if action_changed and is_target_action:
+        event_start = index
+        break
+
+if event_start is None:
+    raise ValueError("Could not find a Strong Deceleration event.")
 
 # 真实默认配置：历史 2 秒、未来 6 秒、每 0.5 秒取一个点、原始数据 10 Hz。
 fps = 10

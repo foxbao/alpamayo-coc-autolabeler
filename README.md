@@ -23,6 +23,7 @@ Do not file security issues publicly here.
 
 - [Support](#support)
 - [Workflow Overview](#workflow-overview)
+- [NAVSIM Local Runbook](docs/navsim_qwen35_autolabeling.md)
 - [Paper](#paper)
 - [Runtime Requirements](#runtime-requirements)
   - [Validated Configurations](#validated-configurations)
@@ -58,6 +59,14 @@ Do not file security issues publicly here.
    to produce chain-of-causation labels.
 4. **Step 4: Validate CoC Labels**: run the optional VLM-based validation
    stages to identify potentially lower-quality labels prior to downstream use.
+
+## NAVSIM Local Runbook
+
+This repository includes a machine-specific experimental runbook for applying
+the CoC Qwen wrapper to NAVSIM scenes. The NAVSIM adapter currently lives in
+the separate Qwen-Drive repository; see
+[`docs/navsim_qwen35_autolabeling.md`](docs/navsim_qwen35_autolabeling.md) for
+the environment, tested command, output format, and review requirements.
 
 ## Paper
 

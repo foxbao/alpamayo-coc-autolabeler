@@ -307,8 +307,9 @@ def main() -> None:
 
             cnt += 1
 
-    # Post-processing the meta actions:
-    # smoothing, resolving conflict, flickering, filling, pruning redundant ones, etc.
+    # Convert the serialized temporal tags to clip-relative intervals and final text.
+    # Segmentation, classification and action-span cleaning ran while each TemporalScenario
+    # generated these tags above.
     post_processing.process_batch(
         meta_action_dir=save_root,
         save_dir=post_save_root,
