@@ -29,6 +29,7 @@ Do not file security issues publicly here.
   - [Validated Configurations](#validated-configurations)
 - [Dependencies (Build Image from Dockerfile)](#dependencies-build-image-from-dockerfile)
 - [Prepare the Data (Physical-AI AV Dataset)](#prepare-the-data-physical-ai-av-dataset)
+  - [PAI-AV subset download and smoke test](docs/pai_av_subset_runbook.md)
   - [Step 1: Generate Meta-Actions](#step-1-generate-meta-actions)
   - [Step 2: Identify Keyframes](#step-2-identify-keyframes)
 - [Run CoC Autolabeling](#run-coc-autolabeling)
@@ -145,6 +146,10 @@ Download the Physical-AI AV dataset once from
 `https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles/tree/main`.
 The same dataset root is used for meta-action labeling, keyframe selection,
 video extraction, and CoC labeling.
+
+For a reproducible small-sample download on a new server, see
+[`docs/pai_av_subset_runbook.md`](docs/pai_av_subset_runbook.md). It covers Hugging Face
+access, the partial-download helper, required components, and the end-to-end smoke run.
 
 ### Step 1: Generate Meta-Actions
 

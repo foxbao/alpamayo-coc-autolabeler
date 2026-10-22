@@ -12,6 +12,7 @@ MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-/home/baojiali/.cache/alpamayo-coc-models}"
 API_CONFIG="${API_CONFIG:-${HOME}/.config/alpamayo-coc/openai_api.yaml}"
 SOURCE_SEGMENT_CONFIG="${RUN_ROOT}/keyframes/segments_relative_timestamp_sampled.json"
 SEGMENT_CONFIG_PATH="$SOURCE_SEGMENT_CONFIG"
+LIMIT=""
 
 MODEL_NAME="qwen3.5_35b"
 EXP_NAME="pai_coc_${MODEL_NAME}"
@@ -28,6 +29,8 @@ Usage: scripts/run_coc_labeling.sh [options]
   --exp-name NAME    Output experiment suffix
   --resume DIR       Resume an existing experiment directory
   --filter VALUE     Hydra list, e.g. '[gentle_acceleration]'; default: all
+  --segment-index FILE  Use a keyframe JSON other than RUN_ROOT/keyframes/...
+  --limit N          Run only the first N unique clip/event frames
   --save-videos      Save diagnostic segment videos
   --dry-run          Print the resolved command without starting inference
   --api-config FILE  GPT YAML config; default: ~/.config/alpamayo-coc/openai_api.yaml
@@ -43,6 +46,8 @@ while (($# > 0)); do
         --exp-name) EXP_NAME="$2"; shift 2 ;;
         --resume) RESUME_EXP_DIR="$2"; shift 2 ;;
         --filter) META_ACTION_FILTER="$2"; shift 2 ;;
+        --segment-index) SOURCE_SEGMENT_CONFIG="$2"; shift 2 ;;
+        --limit) LIMIT="$2"; shift 2 ;;
         --save-videos) SAVE_SEGMENT_VIDEOS="true"; shift ;;
         --dry-run) DRY_RUN="true"; shift ;;
         --api-config) API_CONFIG="$2"; shift 2 ;;
@@ -50,6 +55,11 @@ while (($# > 0)); do
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [[ -n "$LIMIT" && ! "$LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--limit must be a positive integer: $LIMIT" >&2
+    exit 2
+fi
 
 case "$MODEL_NAME" in
     gpt6.1) MODEL_NAME="gpt-6.1-sol" ;;
@@ -78,8 +88,8 @@ done
 # can occur in two buckets, while the production YAML path is keyed only by
 # clip and event timestamp.  Build a temporary globally deduplicated index so
 # one event cannot overwrite another result.
-if [[ "${DISABLE_EVENT_DEDUP:-false}" != "true" ]]; then
-    SEGMENT_CONFIG_PATH="$("$PYTHON_BIN" - "$SOURCE_SEGMENT_CONFIG" <<'PY'
+if [[ "${DISABLE_EVENT_DEDUP:-false}" != "true" || -n "$LIMIT" ]]; then
+    SEGMENT_CONFIG_PATH="$("$PYTHON_BIN" - "$SOURCE_SEGMENT_CONFIG" "$LIMIT" <<'PY'
 import json
 import os
 import sys
@@ -87,12 +97,14 @@ import tempfile
 from pathlib import Path
 
 source = Path(sys.argv[1])
+limit = int(sys.argv[2]) if sys.argv[2] else None
 payload = json.loads(source.read_text(encoding="utf-8"))
 if not isinstance(payload, dict):
     raise SystemExit("segment config must be a JSON object grouped by action")
 
 deduped = {}
 seen = set()
+selected_count = 0
 for bucket, rows in payload.items():
     for row in rows:
         key = (str(row.get("clip_id")), int(row.get("event_start_frame")))
@@ -100,6 +112,11 @@ for bucket, rows in payload.items():
             continue
         seen.add(key)
         deduped.setdefault(str(bucket), []).append(row)
+        selected_count += 1
+        if limit is not None and selected_count >= limit:
+            break
+    if limit is not None and selected_count >= limit:
+        break
 
 fd, name = tempfile.mkstemp(prefix="coc_segments_dedup_", suffix=".json")
 os.close(fd)
@@ -108,6 +125,9 @@ print(name)
 PY
     )"
     echo "Using deduplicated segment index: $SEGMENT_CONFIG_PATH"
+    if [[ -n "$LIMIT" ]]; then
+        echo "Limited inference to at most $LIMIT unique events."
+    fi
 fi
 
 if [[ "$MODEL_NAME" == gpt* ]]; then
