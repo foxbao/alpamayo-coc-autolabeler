@@ -13,14 +13,18 @@
 """
 
 import json
-import math
 import re
 from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 import pandas as pd
 
+from coc_labeling.data_loader.motion_conventions import (
+    LATERAL_SPEED_SIGN_DESCRIPTION,
+    project_velocity_to_longitudinal_lateral,
+)
 
 BASE = Path(__file__).parent / "_outputs/rebuild"
 RUN = Path("/home/baojiali/Downloads/qwen-drive/outputs/pai_reasoning_16_official_20261013")
@@ -184,15 +188,16 @@ def read_ego_speed_samples(clip_id: str, event_frame: int) -> list[dict[str, Any
         tick = int(row.scene_ts)
         vx = float(row.vx)
         vy = float(row.vy)
+        v_long, v_lat = project_velocity_to_longitudinal_lateral(
+            np.array([vx, vy]), np.asarray(float(row.heading))
+        )
         samples.append(
             {
                 "relative_time_seconds": (tick - event_frame) / FPS_CLIPGT,
-                # 生产 trajdata.py 会按每帧 heading 把全局速度旋转到车体坐标系。
-                # 这样 v_long/v_lat 才分别表示车头方向和横向方向的速度。
-                "v_long_mps": vx * math.cos(float(row.heading))
-                + vy * math.sin(float(row.heading)),
-                "v_lat_mps": -vx * math.sin(float(row.heading))
-                + vy * math.cos(float(row.heading)),
+                # 生产 trajdata.py 会按每帧 heading 把源坐标系速度投影到车体坐标系。
+                # v_lat 采用右正约定，表示瞬时车体横向速度，不是变道方向。
+                "v_long_mps": float(v_long),
+                "v_lat_mps": float(v_lat),
             }
         )
     return samples
@@ -223,7 +228,7 @@ def main() -> None:
     print("lateral 按生产实现保留为 Not Available；")
     print("源码明确暂时不把该通道喂给 VLM。")
     print("v_long/v_lat 经过 heading 投影；")
-    print("正 lateral 表示向右，负 lateral 表示向左。")
+    print(LATERAL_SPEED_SIGN_DESCRIPTION)
     print("当前 PAI 子集没有 lane action，因此 lane 通道会全部是 Not Available。")
     print("第 19 课读取这个 evidence.json，自己构造 8 条消息。")
     print("生产 LabelingAgent.run() 会调用 VectorLoader、VideoLoader、MetaActionLoader。")

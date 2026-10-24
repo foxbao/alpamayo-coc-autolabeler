@@ -117,7 +117,7 @@ action_rows.json
 
 第 17 课把三个容易混淆的对象并排打印：meta-action 的 `ActionSpan`、keyframe 选择器保存的 `ActionRecord`，以及 `ParsedSegmentGenerator` 交给 loader 的 `SegmentInfo`。10 Hz clipgt index、微秒 timestamp 和源视频帧号属于不同时间轴；真实转换还会通过 `normalize_meta_action`/`canonicalize_action` 把 `LaneKeep` 归一为 `keep_lane`。
 
-第 18 课读取本机 PAI 产物。keyframe 的 10 Hz clipgt 帧不能直接当作 30 FPS 视频帧：生产 `SegmentInfo` 保存事件时间，`VideoLoader` 再通过 timestamp sidecar 找最近的源视频帧。第 19 课用这些摘要构造 8 条消息，图像位置用文字占位，正式 prompt 仍由生产 `VLMCoCAgent` 从配置加载。
+第 18 课读取本机 PAI 产物。keyframe 的 10 Hz clipgt 帧不能直接当作 30 FPS 视频帧：生产 `SegmentInfo` 保存事件时间，`VideoLoader` 再通过 timestamp sidecar 找最近的源视频帧。速度投影给出车体瞬时横向速度，约定 `v_lat` 右正；它不能代替车道相对位移或变道方向。第 19 课用这些摘要构造 8 条消息，图像位置用文字占位，正式 prompt 仍由生产 `VLMCoCAgent` 从配置加载。
 
 第 20 课调用真实 `VectorLoader`、`VideoLoader`、`MetaActionLoader` 和 `VLMCoCAgent`，把一个 PAI 事件交给本地 Qwen3.5-35B。模型输出必须符合 `OutputSchema` 的嵌套结构，但结构正确不等于场景判断正确，仍需要人工审核视频、轨迹和动作证据。第 21 课把同一事件交给生产协调器 `LabelingAgent`，验证单事件的数据编排和保存流程：
 

@@ -19,6 +19,8 @@
 
 from typing import Any, Dict
 
+from coc_labeling.data_loader.motion_conventions import LATERAL_SPEED_SIGN_DESCRIPTION
+
 PROMPT_VERSION = "coc_autolabeling_release"
 
 
@@ -154,8 +156,8 @@ together with lane priors to detect gap-search waiting/negotiation before lane c
 """
 
 
-ego_state_prompt = """
-These are the ego vehicle's motion states at each frame. Positive lateral indicates rightward movement, negative lateral indicates leftward movement.
+ego_state_prompt = f"""
+These are the ego vehicle's motion states at each frame. {LATERAL_SPEED_SIGN_DESCRIPTION}
 """
 
 

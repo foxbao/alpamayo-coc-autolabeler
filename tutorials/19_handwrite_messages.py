@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from coc_labeling.data_loader.motion_conventions import LATERAL_SPEED_SIGN_DESCRIPTION
 
 BASE = Path(__file__).parent / "_outputs/rebuild"
 
@@ -67,10 +68,7 @@ def main() -> None:
         {
             "role": "user",
             "m_type": "text",
-            "content": (
-                "These are ego motion states. Positive lateral means rightward motion; "
-                "negative lateral means leftward motion."
-            ),
+            "content": f"These are ego body-frame motion states. {LATERAL_SPEED_SIGN_DESCRIPTION}",
         },
         {"role": "user", "m_type": "text", "content": "\n".join(ego_lines)},
         {

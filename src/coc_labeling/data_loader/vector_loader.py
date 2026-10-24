@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 from omegaconf import DictConfig, open_dict
 
+from coc_labeling.data_loader.motion_conventions import LATERAL_SPEED_SIGN_DESCRIPTION
 from coc_labeling.data_loader.trajdata import convert_trajdata2data_dict
 from coc_labeling.utils.data import (
     get_scene_batch_from_scene_id_ts,
@@ -105,37 +106,6 @@ class VectorLoader:
 
         return vector_config
 
-    def extract_segments(self, ego_traj: np.ndarray, event_start: int) -> Tuple[str, str]:
-        """Convert ego trajectory slices into history/future speed text.
-
-        Args:
-            ego_traj: Ego trajectory array in source rate.
-            event_start: Event start frame index in source rate.
-
-        Returns:
-            Two strings: historical speed text and future speed text.
-        """
-        cfg = self._require_vector_config()
-
-        # calculate the hist and fut frame index
-        hist_start_frame = event_start - cfg.hist_length_frame
-        fut_end_frame = event_start + cfg.fut_length_frame
-
-        # get vx and vy from ego traj
-        ego_traj_vxvy = ego_traj[1:, 0:2] - ego_traj[:-1, 0:2]
-        ego_traj_vxvy = ego_traj_vxvy * cfg.fps  # scale to speed
-        ego_hist_vxvy = ego_traj_vxvy[hist_start_frame : event_start : cfg.freq_sample]
-        ego_fut_vxvy = ego_traj_vxvy[event_start : fut_end_frame : cfg.freq_sample]
-
-        # convert to text
-        hist_long = ego_hist_vxvy[:, 0]
-        hist_lat = ego_hist_vxvy[:, 1]
-        fut_long = ego_fut_vxvy[:, 0]
-        fut_lat = ego_fut_vxvy[:, 1]
-        ego_hist_text = f"The longitudinal speed is: {hist_long}. The lateral speed is {hist_lat}."
-        ego_fut_text = f"The longitudinal speed is: {fut_long}. The lateral speed is {fut_lat}."
-        return ego_hist_text, ego_fut_text
-
     def convert_speed_to_text(self, data_dict: Dict[str, Any]) -> Tuple[str, str, str]:
         """Format ego longitudinal/lateral speed arrays into prompt text blocks.
 
@@ -198,7 +168,7 @@ class VectorLoader:
             "Ego speed time series (relative to event time t=0.0s):\n"
             f"- Longitudinal (m/s): {all_long_series}\n"
             f"- Lateral (m/s): {all_lat_series}\n"
-            "Positive lateral speed means rightward motion, negative means leftward motion."
+            f"{LATERAL_SPEED_SIGN_DESCRIPTION}"
         )
         return ego_hist_text, ego_fut_text, ego_text
 
