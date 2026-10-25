@@ -19,7 +19,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, cast
 
 import coc_labeling.prompts.vlm.coc as prompt
 import coc_labeling.prompts.vlm.coc_repair_lateral as repair_prompt
@@ -28,9 +28,9 @@ from coc_labeling.model_clients.vlm_wrapper import VLMWrapper
 from coc_labeling.prompts.common import OutputSchema
 from coc_labeling.utils.general_helpers import get_vlm_yaml_path, save_yaml
 
-Message = Dict[str, Any]
-DataDict = Dict[str, Any]
-OutputDict = Dict[str, Any]
+Message = dict[str, Any]
+DataDict = dict[str, Any]
+OutputDict = dict[str, Any]
 logger = logging.getLogger(__name__)
 MODEL_USAGE_KEYS = ("prompt_tokens", "response_tokens", "reasoning_tokens")
 
@@ -48,6 +48,7 @@ class VLMCoCAgent:
         *,
         init_model: bool = True,
         timeout_sec: int = TIMEOUT_MAX,
+        max_output_tokens: int = 4096,
     ) -> None:
         """Initialize CoC VLM agent and helper function agent.
 
@@ -58,7 +59,10 @@ class VLMCoCAgent:
             data_loader_config: Resolved data-loader config used for prompt timing.
             init_model: Whether to initialize local model weights immediately.
             timeout_sec: Request timeout in seconds for remote model calls.
+            max_output_tokens: Maximum response tokens requested from the VLM.
         """
+        if max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be greater than zero")
         self.vlm = VLMWrapper(
             model_name,
             init_model=init_model,
@@ -70,6 +74,7 @@ class VLMCoCAgent:
         self.temperature = float(getattr(agent_config, "temperature", 0.0))
         self.top_p = float(getattr(agent_config, "top_p", 1.0))
         self.repetition_penalty = float(getattr(agent_config, "repetition_penalty", 1.0))
+        self.max_output_tokens = max_output_tokens
 
     @staticmethod
     def _get_prompt_version() -> str:
@@ -89,7 +94,7 @@ class VLMCoCAgent:
         """Render prompt text from config-aware prompt modules when available."""
         render_func = getattr(prompt_module, f"render_{attr_name}", None)
         if callable(render_func):
-            return render_func(self.data_loader_config)
+            return cast(str, render_func(self.data_loader_config))
         return getattr(prompt_module, attr_name)
 
     def process_results(
@@ -152,6 +157,7 @@ class VLMCoCAgent:
         all_fpv_frames = hist_fpv_frames + fut_fpv_frames
         all_meta_actions = data["all_meta_action_str"]
         all_ego_text = data["ego_text"]
+        ego_state_prompt = data.get("ego_state_prompt", prompt_module.ego_state_prompt)
         return [
             {"role": "system", "m_type": "text", "content": prompt_module.system},
             {
@@ -169,7 +175,7 @@ class VLMCoCAgent:
             {
                 "role": "user",
                 "m_type": "text",
-                "content": prompt_module.ego_state_prompt,
+                "content": ego_state_prompt,
             },
             {"role": "user", "m_type": "text", "content": all_ego_text},
             {
@@ -190,6 +196,7 @@ class VLMCoCAgent:
         """Run VLM inference with configured sampling parameters."""
         return self.vlm.infer(
             messages=messages,
+            max_tokens=self.max_output_tokens,
             temperature=self.temperature,
             top_p=self.top_p,
             repetition_penalty=self.repetition_penalty,
@@ -435,14 +442,18 @@ class VLMCoCAgent:
         if predicted_type != expected_type:
             return (
                 True,
-                f"Output lateral type mismatch: predicted={predicted_type}, "
-                f"expected={expected_type}.",
+                (
+                    f"Output lateral type mismatch: predicted={predicted_type}, "
+                    f"expected={expected_type}."
+                ),
             )
         if expected_direction and predicted_direction != expected_direction:
             return (
                 True,
-                f"Output direction mismatch: predicted={predicted_direction or 'none'}, "
-                f"expected={expected_direction}.",
+                (
+                    f"Output direction mismatch: predicted={predicted_direction or 'none'}, "
+                    f"expected={expected_direction}."
+                ),
             )
         return False, "Initial output is consistent with onset-based lateral prior."
 
@@ -590,6 +601,7 @@ class VLMCoCRemoteAgent(VLMCoCAgent):
         data_loader_config: Any | None = None,
         ip_addr: str | None = None,
         timeout_sec: int = TIMEOUT_MAX,
+        max_output_tokens: int = 4096,
     ) -> None:
         """Initialize remote-serving variant without local model initialization.
 
@@ -608,4 +620,5 @@ class VLMCoCRemoteAgent(VLMCoCAgent):
             ip_addr=ip_addr,
             init_model=False,
             timeout_sec=timeout_sec,
+            max_output_tokens=max_output_tokens,
         )
