@@ -139,7 +139,7 @@ def _read_optional_orientation(
 def _read_optional_linear_velocity(
     payload: object, path: Path
 ) -> tuple[float, float, float] | None:
-    """读取 linear_velocity 原值，仅供坐标一致性审计。"""
+    """读取 linear_velocity 原值，仅供审计；四条记录强支持车体 FLU 解释。"""
     if not isinstance(payload, dict):
         return None
     velocity = payload.get("linear_velocity")
@@ -249,7 +249,7 @@ def sample_recorded_linear_velocity_at(
     *,
     max_gap_sec: Decimal = MAX_LOCALIZATION_GAP_SEC,
 ) -> tuple[float, float, float]:
-    """插值 localization.linear_velocity，供坐标语义审计，不作为主速度来源。"""
+    """插值原始速度供审计；工作假设为车体 FLU，尚无生产端坐标契约。"""
     left, right, fraction = _sample_bracket(
         samples, timestamp, max_gap_sec=max_gap_sec
     )

@@ -78,9 +78,16 @@ def write_position_motion_audit(
             "v_long=body_forward; v_lat=-body_left (right-positive)"
         ),
         "recorded_velocity_audit": (
-            "Compare derived body forward/left components against localization "
-            "linear_velocity x/y, treated as a candidate FLU field only; producer frame "
-            "metadata is absent."
+            "The four checked records strongly support interpreting localization "
+            "linear_velocity x/y as body-FLU forward/left: rotating those components by "
+            "orientation agrees much better with position-derived map velocity than treating "
+            "them as map-XY. Compare derived body forward/left components against that "
+            "working hypothesis for audit only; producer frame metadata is absent, and this "
+            "field is not sent to the agent."
+        ),
+        "recorded_linear_velocity_frame_hypothesis": (
+            "body-FLU-like horizontal frame (x=forward, y=left) is strongly supported by the "
+            "four checked records; z-up is assumed, and no frame is declared by producer metadata"
         ),
         "derivative_window_sec": float(window_sec),
         "resampled_position_interval_sec": float(LOCALIZATION_RESAMPLE_INTERVAL_SEC),
@@ -92,7 +99,10 @@ def write_position_motion_audit(
             "Localization JSON has no explicit coordinate-frame labels. For these four records, "
             "map motion bearing closely follows quaternion local-x direction; planning theta "
             "and front-camera scene flow in 20261019153941_record support interpreting local x "
-            "as forward (FLU). This is a dataset-level inference, not producer metadata."
+            "as forward (FLU). Independently, rotating linear_velocity x/y as body-FLU by the "
+            "quaternion gives substantially lower direction and vector residuals against "
+            "position-derived map velocity than treating it as map-XY. This is a strong "
+            "dataset-level inference, not producer metadata."
         ),
         "samples": [
             {
@@ -147,6 +157,16 @@ def write_position_motion_audit(
                 ),
                 "body_velocity_residual_vs_recorded_xy_mps": (
                     sample.body_velocity_residual_mps
+                ),
+                "recorded_linear_velocity_as_map_xy_residual_mps": (
+                    math.hypot(
+                        sample.recorded_linear_velocity_xyz[0] - sample.velocity_x,
+                        sample.recorded_linear_velocity_xyz[1] - sample.velocity_y,
+                    )
+                    if sample.recorded_linear_velocity_xyz is not None
+                    and sample.velocity_x is not None
+                    and sample.velocity_y is not None
+                    else None
                 ),
                 "ground_speed_mps": sample.ground_speed,
                 "trajectory_bearing_map_xy_deg": sample.trajectory_bearing_deg,

@@ -25,7 +25,7 @@
 | localization 数值字段 | 当前样本含 `position`、`orientation` 和 `linear_velocity`；JSON 未声明坐标系、四元数方向约定或 producer | 已检查字段；语义不完整 |
 | `position.x/y` | 作为平面 map 坐标使用，并从时间差分得到地图平面速度 | 当前处理假设 |
 | `orientation` | 按车体局部坐标到 map-XY 的四元数解释；这批数据的局部 x 轴按前向、局部 y 轴按左向解释，即 FLU | 多条数据线索支持的推断 |
-| `linear_velocity.x/y/z` | 只在审计中作为“候选 FLU”数值比较；帧语义未知，不直接送入 Agent | 未确认语义 |
+| `linear_velocity.x/y/z` | 水平分量按车体 FLU 的 x 前、y 左解释后，与位置差分速度明显更一致；z 轴正方向未单独验证 | 强支持的水平帧工作假设，待生产端确认 |
 
 这里不采用旧 Century 源码作为当前格式依据，因为它可能不对应这批数据的实际生产链路。
 
@@ -60,7 +60,7 @@
    ```
 
    `v_lat` 是车体坐标下的瞬时侧向速度，不等同于变道方向。位置或姿态不可可靠取得时，对应值标为 `Not Available`。
-5. **构造 Agent 输入和审核材料。** 17 个时刻的 `v_long`、`v_lat`、`v_ground` 写入 `ego_text`；meta-action 仍为 `Not Available`。`linear_velocity` 的原值和按候选 FLU 解释计算的差异写入审计文件，但不进入 Agent 输入。prepare-only 生成帧清单、输入预览、位置轨迹及速度审计；默认不加载 API 凭据或请求模型。显式传入 `--run-inference` 才生成 CoC YAML、叠字视频和带 CoC 的联系表。
+5. **构造 Agent 输入和审核材料。** 17 个时刻的 `v_long`、`v_lat`、`v_ground` 写入 `ego_text`；meta-action 仍为 `Not Available`。`linear_velocity` 的原值及其按车体 FLU 水平分量工作假设与位置推导速度的差异写入审计文件，但不进入 Agent 输入。四条记录的核对显示，先把原始 `linear_velocity.x/y` 按 x 前、y 左用 orientation 旋转到 map，比直接按 map-XY 解释更一致；这仍需生产端确认，且 z 轴正方向未单独验证。prepare-only 生成帧清单、输入预览、位置轨迹及速度审计；默认不加载 API 凭据或请求模型。显式传入 `--run-inference` 才生成 CoC YAML、叠字视频和带 CoC 的联系表。
 
 当前实现假设的集中说明见 [`local_record_coordinate_conversion.md`](local_record_coordinate_conversion.md)，使用方式见 [`local_record_autolabel.md`](local_record_autolabel.md)。生成的 `position_motion_audit.json` 会记录时间来源、差分方法、姿态解释、速度映射和坐标不确定性。
 
@@ -81,7 +81,7 @@
 
 在把这套转换推广到更多数据前，优先确认以下事项：
 
-1. 向当前 localization 数据的生产或维护人员核实 `position` 的参考坐标系、四元数分量顺序与旋转方向、局部轴定义，以及 `linear_velocity` 的坐标系。若无法取得生产端说明，应把 FLU 限定为这批已抽查记录的适配假设。
+1. 向当前 localization 数据的生产或维护人员核实 `position` 的参考坐标系、四元数分量顺序与旋转方向、局部轴定义，以及 `linear_velocity` 的坐标系。现有四条记录强支持 `linear_velocity` 为车体 FLU；若无法取得生产端说明，仍应把它限定为这批已抽查记录的适配假设。
 2. 核实 camera 与 localization 时间戳是否共享同一时钟和 epoch。用户已确认 localization 文件名时间是采样时刻；这还没有单独证明各传感器时钟之间不存在 offset。
 3. 在其余记录和不同运动状态（停车、倒车、转弯、横移）上复查：位置差分、姿态投影、候选 `linear_velocity` 及视频是否相互吻合。确认 `linear_velocity` 的帧语义后，才决定能否把它作为主速度来源或校验真值。
 4. 验证 32 ms 原始插值上限和 0.5 秒差分窗口对当前定位采样抖动及速度变化是否合适；若调整，应同时更新审计产物和回归测试。

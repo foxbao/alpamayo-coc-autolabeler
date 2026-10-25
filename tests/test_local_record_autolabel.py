@@ -414,7 +414,11 @@ def test_write_position_motion_audit_writes_json_and_equal_scale_plot(tmp_path: 
         "y": -1.0,
         "z": 0.0,
     }
+    assert payload["samples"][0]["recorded_linear_velocity_as_map_xy_residual_mps"] == pytest.approx(0.0)
+    assert "strongly supported" in payload["recorded_linear_velocity_frame_hypothesis"]
+    assert "not sent to the agent" in payload["recorded_velocity_audit"]
     assert "front-camera" in payload["coordinate_warning"]
+    assert "not producer metadata" in payload["coordinate_warning"]
     assert rendered is not None
 
 

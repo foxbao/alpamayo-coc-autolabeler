@@ -34,7 +34,7 @@ outputs/local_record_autolabel_mvp/<record>/event_<seconds>s/
 
 `position_trajectory_10hz.json` 保存事件相对 10 Hz 网格上的 map-XY 位置。每个网格点只会在前后原始定位样本相隔不超过 32 ms 时插值；原始间隔超过 32 ms 的区段会单独列在 `raw_sampling_gaps_over_limit` 中。`position_trajectory.png` 显示 10 Hz 轨迹，红点标出跨越原始大间隔的位置段；图上的 map-XY 轨迹方向不代表车头方向。
 
-`position_motion_audit.json` 记录 `-2.0` 至 `+6.0` 秒、每 0.5 秒一个的 17 个位置差分速度点、姿态、车体速度和有效性。对当前四条记录，数据核对支持将 orientation 解释为车体 FLU 到 map-XY 的旋转；地图速度逆旋转后，`v_long = body_x`、`v_lat = -body_y`（右正）。这项判断来自轨迹方向、规划 `theta` 和前视画面运动，JSON 本身没有坐标系标签；详细依据见 [local_record_coordinate_conversion.md](local_record_coordinate_conversion.md)。`linear_velocity.x/y` 只作为候选 FLU 分量与推导结果做一致性审计。`agent_input_preview.json` 展示实际送入 agent 的输入，`ego_text` 包含 `v_long`、`v_lat` 和地面速度大小；姿态缺失时，前两个量显示 `Not Available`，位置速度仍可提供地面速度。默认 prepare-only 不读取 API 凭据、不初始化模型。
+`position_motion_audit.json` 记录 `-2.0` 至 `+6.0` 秒、每 0.5 秒一个的 17 个位置差分速度点、姿态、车体速度和有效性。对当前四条记录，数据核对支持将 orientation 解释为车体 FLU 到 map-XY 的旋转；地图速度逆旋转后，`v_long = body_x`、`v_lat = -body_y`（右正）。这项判断来自轨迹方向、规划 `theta` 和前视画面运动，JSON 本身没有坐标系标签；详细依据见 [local_record_coordinate_conversion.md](local_record_coordinate_conversion.md)。此外，四条记录的 `linear_velocity.x/y` 按车体 FLU 的水平分量解释并用 orientation 旋转到 map 后，与位置差分速度明显更一致，因此代码把“`linear_velocity` 水平分量是车体 FLU”记录为强支持的工作假设；z 轴正方向未单独核实。它仍只用于审计，不直接替代位置推导速度。`agent_input_preview.json` 展示实际送入 agent 的输入，`ego_text` 包含 `v_long`、`v_lat` 和地面速度大小；姿态缺失时，前两个量显示 `Not Available`，位置速度仍可提供地面速度。默认 prepare-only 不读取 API 凭据、不初始化模型。
 
 ## 单次 GPT 推理
 
