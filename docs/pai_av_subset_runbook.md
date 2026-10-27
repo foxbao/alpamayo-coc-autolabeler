@@ -1,7 +1,7 @@
-# PAI-AV 小样本下载与 CoC 自动标注
+# PAI-AV 下载、CoC 自动标注与可视化
 
-这份手册面向新服务器：下载一小部分 PhysicalAI AV 数据，生成 meta-action 和
-keyframe，提取前视视频，再用本仓库正式入口运行少量 CoC 推理。
+这份手册说明如何下载一小部分 PhysicalAI AV 数据，生成 meta-action 和 keyframe，
+提取前视视频，再用本仓库正式入口运行 CoC 推理并查看可视化结果。
 
 ## 先理解下载粒度
 
@@ -39,13 +39,17 @@ hf auth whoami
 
 ## 准备 CoC 仓库和 Python 环境
 
-在目标服务器上获取本仓库，并按要使用的推理后端安装依赖。建议让下载和标注步骤
-使用各自明确的 Python 环境；下面的 `PYTHON_BIN` 要指向已安装本仓库的环境。
+在目标服务器上获取本仓库，并按要使用的推理后端安装依赖。建议使用命名 Conda 环境
+`alpamayo-coc`；后续的 `PYTHON_BIN` 指向这个环境里的 Python。
 
 ```bash
 COC_REPO=/path/to/alpamayo-coc-autolabeler
 git clone https://github.com/NVlabs/alpamayo-coc-autolabeler.git "$COC_REPO"
 cd "$COC_REPO"
+
+# 在 Conda 配置的环境目录中创建命名环境
+conda create -n alpamayo-coc python=3.12 -y
+conda activate alpamayo-coc
 
 # GPT API 或其它非本地 Qwen 后端
 python -m pip install -e ".[dev]"
@@ -244,6 +248,83 @@ RUN_ROOT="$RUN_ROOT" \
 ```bash
 find experiments -path '*pai_subset_*_smoke*' -name 'cot_*.yaml' -type f | wc -l
 ```
+
+## 可视化 meta-action 和 CoC 描述
+
+`scripts/vis_video_pai.py` 会从相机 chunk 中准备所需视频，并调用
+`scripts/vis_video.py` 渲染整段视频。画面包含逐帧纵向/横向 meta-action，以及可用时的
+速度和航向曲线。`vis_video_pai.py` 会通过 `python` 子进程启动渲染脚本，所以要让当前
+环境的 Python 位于 `PATH` 前面：
+
+```bash
+# 指向前面安装了本仓库依赖的 Python 环境
+PYTHON_BIN=/path/to/conda/env/bin/python
+export PATH="$(dirname "$PYTHON_BIN"):$PATH"
+
+META_ACTION_VIS_DIR="$RUN_ROOT/visualization/meta_action"
+python scripts/vis_video_pai.py \
+  --physical_ai_root "$PAI_ROOT" \
+  --meta_action_dir "$RUN_ROOT/meta_action/final_outputs" \
+  --vis_dir "$META_ACTION_VIS_DIR" \
+  --cache_dir "$RUN_ROOT/cache/trajdata" \
+  --work_root "$RUN_ROOT/visualization_work" \
+  --clip_list_path "$RUN_ROOT/inputs/scene_list.txt" \
+  --num_workers 2
+```
+
+CoC 推理的 `cot_<timestamp>.yaml` 保存模型生成的
+`final_content.ego_behavior_schema.effect_on_ego_behavior`。用
+[`scripts/overlay_coc_result.py`](../scripts/overlay_coc_result.py) 可以把这句话叠到视频上。
+下面的批处理为每个 CoC 结果生成一个事件片段：事件前 2 秒、事件后 6 秒，顶部显示 CoC
+描述。背景使用上一步的 meta-action 可视化，因此同一视频也会显示速度、航向和动作时间线。
+
+把 `COC_EXP_DIR` 设为启动器日志中 `CoT results saved to` 后面的实验目录：
+
+```bash
+CLIP_ID="$(head -n 1 "$RUN_ROOT/inputs/scene_list.txt")"
+COC_EXP_DIR="$COC_REPO/experiments/<timestamp>_pai_subset_gpt_smoke"
+COC_RESULT_DIR="$COC_EXP_DIR/$CLIP_ID"
+COC_VIS_DIR="$RUN_ROOT/visualization/coc"
+mkdir -p "$COC_VIS_DIR"
+
+PYTHONPATH="$COC_REPO/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+"$PYTHON_BIN" - "$COC_RESULT_DIR" \
+  "$META_ACTION_VIS_DIR/$CLIP_ID.mp4" "$COC_VIS_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+from overlay_coc_result import overlay_text, read_effect
+
+result_dir = Path(sys.argv[1])
+base_video = Path(sys.argv[2])
+output_dir = Path(sys.argv[3])
+results = sorted(result_dir.glob("cot_*.yaml"), key=lambda path: int(path.stem.split("_")[1]))
+if not results:
+    raise SystemExit(f"No cot_*.yaml results found in {result_dir}")
+
+for result in results:
+    payload = yaml.safe_load(result.read_text(encoding="utf-8"))
+    event_seconds = float(payload["event_start_timestamp"]) / 1_000_000
+    start_seconds = max(0.0, event_seconds - 2.0)
+    output = output_dir / f"{result.stem}_overlay.mp4"
+    overlay_text(
+        base_video,
+        output,
+        read_effect(result),
+        start_seconds=start_seconds,
+        duration_seconds=8.0,
+        event_offset_seconds=event_seconds - start_seconds,
+        caption_position="top",
+    )
+    print(f"Wrote {output}")
+PY
+```
+
+CoC 文字叠加只读取已有 YAML，不会再次调用模型。若只需处理一个事件，也可以直接调用
+`overlay_coc_result.py --video ... --result ... --output ...`；用 `--start-seconds`、
+`--duration-seconds` 和 `--event-offset-seconds` 指定事件窗口和事件在片段中的位置。
 
 ## 新服务器上还需要准备什么
 

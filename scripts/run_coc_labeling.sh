@@ -5,7 +5,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-/home/baojiali/anaconda3/envs/alpamayo-coc/bin/python}"
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+    if [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
+        PYTHON_BIN="${CONDA_PREFIX}/bin/python"
+    else
+        PYTHON_BIN="$(command -v python || true)"
+    fi
+fi
 DATA_DIR="${DATA_DIR:-/home/baojiali/Downloads/qwen-drive/datasets/pai_reasoning_16}"
 RUN_ROOT="${RUN_ROOT:-/home/baojiali/Downloads/qwen-drive/outputs/pai_reasoning_16_official_20261013}"
 MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-/home/baojiali/.cache/alpamayo-coc-models}"
