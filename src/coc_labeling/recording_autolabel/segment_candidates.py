@@ -19,7 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .camera import _sample_offsets, select_frames
+from .camera import sample_offsets, select_frames
 from .types import LocalMotionChunk, SelectedFrame, TimedImage
 
 DEFAULT_PERIODIC_CANDIDATE_INTERVAL_SEC = Decimal(5)
@@ -155,7 +155,8 @@ def select_segment_candidates(
 
     这一阶段对应 PAI 的 ``keyframe_auto_select``：读取动作区间、应用筛选条件，
     产生下游使用的片段候选。本地版本会直接验证图片窗口并附上 16 张选中帧；
-    返回候选后还可用 ``balance_action_candidates`` 按动作类别限制样本数。
+    返回候选后还可用 ``balance_and_select_candidates`` 按动作类别限额和最小间距
+    重新选择。
 
     参数中的时间原点各不相同：
 
@@ -192,7 +193,7 @@ def select_segment_candidates(
     camera_end = camera_images[-1].timestamp if camera_images else None
     if camera_start is None or camera_end is None:
         raise ValueError("No camera images are available")
-    offsets = _sample_offsets(history_sec, future_sec, interval_sec)
+    offsets = sample_offsets(history_sec, future_sec, interval_sec)
 
     # 先验证每个候选是否真的有完整窗口和可用图片；无效项不应挤掉有效候选。
     candidates: list[SegmentCandidate] = []
@@ -288,8 +289,7 @@ def balance_action_candidates(
     与 PAI 的 ``balance_action_records`` 一样，每类最多保留 ``target_count`` 项，
     按动作区间时长降序选择。长度相同时，按绝对发生时间和候选 ID 稳定排序。
     这里只处理相机窗口有效、尚未过滤或拒绝的动作候选；包括第一次近邻去重中
-    被压制的候选。调用方应在每条记录内再调用 ``apply_candidate_separation``，
-    使被限额移除的动作候选不再压住其他动作或定时覆盖候选。
+    被压制的候选。限额过滤时释放其选帧对象；若之后回填，输出阶段会重新匹配图片。
 
     返回各类别的 ``(平衡前数量, 平衡后数量)``，便于命令行汇报。
     """
@@ -340,6 +340,113 @@ def balance_action_candidates(
             candidate.selected_frames = None
         summary[action_label] = (len(action_candidates), keep_count)
     return summary
+
+
+def balance_and_select_candidates(
+    candidate_groups: list[list[SegmentCandidate]],
+    target_count: int,
+    minimum_separation_sec: Decimal,
+) -> dict[str, tuple[int, int]]:
+    """按类别限额和记录内最小间距选择候选，并回填可行的动作候选。
+
+    ``target_count`` 是每类上限。先依 PAI 语义优先保留持续时间较长的动作；
+    若这些候选因记录内的时间间距而相互抑制，就从该类别剩余候选中按时长
+    递减回填。回填只接受与本记录已选动作候选保持最小间距的项目。最后重新
+    应用间距规则，让动作候选继续优先于定时覆盖候选。
+
+    类别平衡跨所有记录统计，间距约束只在同一记录内生效。返回每个类别的
+    ``(可用候选数, 最终选中数)``。
+
+    输入应来自 ``select_segment_candidates``：动作候选必须已经经过相机窗口检查
+    和首次间距筛选，状态为 ``selected``、``suppressed``、``filtered`` 或
+    ``rejected``。内部回填时才会把候选重置为 ``pending``。
+    """
+    if minimum_separation_sec < 0:
+        raise ValueError("Minimum candidate separation cannot be negative")
+
+    all_candidates = [candidate for group in candidate_groups for candidate in group]
+    pending_actions = [
+        candidate.seed.candidate_id
+        for candidate in all_candidates
+        if candidate.status == "pending" and candidate.seed.source == "action_span_start"
+    ]
+    if pending_actions:
+        candidate_ids = ", ".join(pending_actions)
+        raise ValueError(
+            "Action candidates must pass initial window and separation checks before balancing; "
+            f"pending: {candidate_ids}"
+        )
+
+    balance_summary = balance_action_candidates(all_candidates, target_count)
+    available_by_action = {
+        action: available for action, (available, _) in balance_summary.items()
+    }
+    for group in candidate_groups:
+        apply_candidate_separation(group, minimum_separation_sec)
+
+    selected_actions_by_group = [
+        [
+            candidate
+            for candidate in group
+            if candidate.status == "selected"
+            and candidate.seed.source == "action_span_start"
+        ]
+        for group in candidate_groups
+    ]
+    selected_by_action: dict[str, int] = {}
+    for selected_actions in selected_actions_by_group:
+        for candidate in selected_actions:
+            action = candidate.seed.action_label
+            if action is not None:
+                selected_by_action[action] = selected_by_action.get(action, 0) + 1
+
+    overflow = sorted(
+        (
+            (group_index, candidate)
+            for group_index, group in enumerate(candidate_groups)
+            for candidate in group
+            if candidate.status == "filtered"
+            and candidate.reason == "action_type_target_count_exceeded"
+        ),
+        key=lambda item: (
+            -(item[1].seed.action_duration_sec or Decimal(0)),
+            item[1].seed.absolute_timestamp,
+            item[1].seed.candidate_id,
+        ),
+    )
+    for group_index, candidate in overflow:
+        action = candidate.seed.action_label
+        if action is None or selected_by_action.get(action, 0) >= target_count:
+            continue
+        selected_actions = selected_actions_by_group[group_index]
+        if any(
+            abs(item.seed.camera_time_sec - candidate.seed.camera_time_sec)
+            < minimum_separation_sec
+            for item in selected_actions
+        ):
+            continue
+
+        # 输出阶段会为回填候选重新匹配图片，避免平衡阶段长期保留多余帧对象。
+        candidate.status = "pending"
+        candidate.reason = None
+        candidate.merged_into = None
+        candidate.merged_candidates.clear()
+        selected_actions.append(candidate)
+        selected_by_action[action] = selected_by_action.get(action, 0) + 1
+
+    for group in candidate_groups:
+        apply_candidate_separation(group, minimum_separation_sec)
+
+    final_by_action: dict[str, int] = {}
+    for candidate in all_candidates:
+        if candidate.status == "selected" and candidate.seed.source == "action_span_start":
+            action = candidate.seed.action_label
+            if action is not None:
+                final_by_action[action] = final_by_action.get(action, 0) + 1
+    return {
+        action: (available, final_by_action.get(action, 0))
+        for action, available in sorted(available_by_action.items())
+    }
 
 
 def candidate_manifest_payload(

@@ -14,7 +14,6 @@ from typing import Any
 
 from .local_record_autolabel import (
     DEFAULT_API_CONFIG,
-    DEFAULT_INPUT_ROOT,
     _load_temporal_config,
     _prepare_local_record,
     _print_preparation_summary,
@@ -36,7 +35,12 @@ CANDIDATE_TYPES = ("all", "action_span", "coverage")
 def _parser() -> argparse.ArgumentParser:
     """定义候选输入、输出目录和可选推理参数。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-root", type=Path, default=DEFAULT_INPUT_ROOT)
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        required=True,
+        help="Root directory containing local recording folders.",
+    )
     parser.add_argument("--candidate-root", type=Path, default=DEFAULT_CANDIDATE_ROOT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_LABEL_OUTPUT_ROOT)
     parser.add_argument("--record", nargs="+", help="只处理指定的记录目录名")
@@ -60,6 +64,8 @@ def _parser() -> argparse.ArgumentParser:
 def _record_directories(candidate_root: Path, requested: list[str] | None) -> list[Path]:
     """按显式记录名或候选清单发现记录。"""
     if requested:
+        if len(requested) != len(set(requested)):
+            raise SystemExit("--record must not contain duplicate record names")
         paths = []
         for record_id in requested:
             if Path(record_id).name != record_id or record_id in {".", ".."}:
@@ -79,6 +85,7 @@ def _load_selected_candidates(
     manifest_path: Path,
     requested_ids: set[str] | None,
     candidate_type: str = "all",
+    expected_window: tuple[Decimal, Decimal, Decimal] | None = None,
 ) -> tuple[str, list[tuple[str, Decimal]]]:
     """读取选中候选的 ID 和相机相对时刻，可按候选池筛选。"""
     if candidate_type not in CANDIDATE_TYPES:
@@ -92,6 +99,8 @@ def _load_selected_candidates(
     record_id = payload.get("record_id")
     if not isinstance(record_id, str) or not record_id:
         raise ValueError(f"候选清单缺少有效 record_id：{manifest_path}")
+    if expected_window is not None:
+        _validate_manifest_window(payload, manifest_path, expected_window)
 
     # v2 将动作区间样本与无标签覆盖样本分开放；仍读取旧版扁平清单。
     if "action_candidates" in payload or "coverage_candidates" in payload:
@@ -162,6 +171,45 @@ def _load_selected_candidates(
     return record_id, selected
 
 
+def _validate_manifest_window(
+    payload: dict[str, Any],
+    manifest_path: Path,
+    expected_window: tuple[Decimal, Decimal, Decimal],
+) -> None:
+    """拒绝使用与候选筛选时不同的 CoC 图片窗口配置。"""
+    raw_window = payload.get("window")
+    has_v2_candidate_groups = any(
+        key in payload for key in ("action_candidates", "coverage_candidates")
+    )
+    is_v2_manifest = payload.get("schema_version") in (2, "2") or has_v2_candidate_groups
+    if is_v2_manifest and not isinstance(raw_window, dict):
+        raise ValueError(f"v2 候选清单缺少 window 配置：{manifest_path}")
+    if raw_window is None:
+        # 兼容旧版扁平清单；它们没有记录候选筛选时的图片窗口。
+        return
+    if not isinstance(raw_window, dict):
+        raise TypeError(f"候选清单 window 必须是 JSON object：{manifest_path}")
+
+    fields = ("history_sec", "future_sec", "sample_interval_sec")
+    actual: list[Decimal] = []
+    for field in fields:
+        try:
+            value = Decimal(str(raw_window[field]))
+        except (KeyError, InvalidOperation, TypeError) as exc:
+            raise ValueError(f"候选清单 window.{field} 无效：{manifest_path}") from exc
+        if not value.is_finite() or value <= 0:
+            raise ValueError(f"候选清单 window.{field} 必须为正数：{manifest_path}")
+        actual.append(value)
+
+    if tuple(actual) != expected_window:
+        expected = {field: value for field, value in zip(fields, expected_window)}
+        found = {field: value for field, value in zip(fields, actual)}
+        raise ValueError(
+            f"候选清单图片窗口与当前 CoC 配置不一致：{manifest_path}; "
+            f"manifest={found}, config={expected}。请重新运行候选筛选，或恢复对应配置。"
+        )
+
+
 def _legacy_candidate_type(candidate: Any) -> str | None:
     """根据旧版扁平候选中的类型或来源推断候选池。"""
     if not isinstance(candidate, dict):
@@ -216,6 +264,7 @@ class LocalLabelingAgent:
             manifest_path,
             requested_ids,
             candidate_type=self.candidate_type,
+            expected_window=(self.history_sec, self.future_sec, self.interval_sec),
         )
         if record_id != record_dir.name:
             raise ValueError(

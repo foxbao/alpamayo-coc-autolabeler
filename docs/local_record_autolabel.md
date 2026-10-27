@@ -26,6 +26,7 @@ python -m coc_labeling.local_data_labeling \
 ```bash
 python -m coc_labeling.local_keyframe_auto_select \
   --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --meta-action-root outputs/local_record_candidates \
   --record \
     20261019153841_record \
     20261019153911_record \
@@ -34,11 +35,13 @@ python -m coc_labeling.local_keyframe_auto_select \
   --output-dir outputs/local_record_candidates
 ```
 
-候选阶段不会重新读取 localization，也不会重新计算 meta-action。缺少 `full_record_meta_action.json` 时，命令会提示先运行 `python -m coc_labeling.local_data_labeling`。默认每 5 秒生成一个无动作类别的覆盖点，并要求最终保留的候选至少相隔 2 秒；动作区间起点优先于附近的覆盖点。动作候选默认至少持续 1 秒（10 Hz 下 10 个 tick），也可以只保留指定类别，例如 `--actions "Gentle Deceleration" Stop`；这些筛选不会影响定时覆盖候选。可用 `--minimum-action-duration-sec` 调整动作时长门槛，也可用 `--periodic-interval-sec` 和 `--minimum-separation-sec` 调整覆盖频率及近邻间距。
+候选阶段不会重新读取 localization，也不会重新计算 meta-action。缺少 `full_record_meta_action.json` 时，命令会提示先运行 `python -m coc_labeling.local_data_labeling`。`--meta-action-root` 指定第一阶段动作 JSON 的目录，`--output-dir` 指定本阶段候选清单和联系表的输出目录；省略前者时仍使用 `--output-dir`，兼容原有命令。默认每 5 秒生成一个无动作类别的覆盖点，并严格要求最终保留的候选起点至少相隔 2 秒；动作区间起点优先于附近的覆盖点。这个间距规则不保证一个长动作的整个过程都会落在候选窗口中，靠近动作候选的覆盖点也可能被抑制。动作候选默认至少持续 1 秒（10 Hz 下 10 个 tick），也可以只保留指定类别，例如 `--actions "Gentle Deceleration" Stop`；这些筛选不会影响定时覆盖候选。可用 `--minimum-action-duration-sec` 调整动作时长门槛，也可用 `--periodic-interval-sec` 和 `--minimum-separation-sec` 调整覆盖频率及近邻间距。
 
-候选筛选随后会像 PAI 的 `keyframe_auto_select` 一样按动作类别限制样本数：对本次命令处理的所有记录，先验证相机窗口，再为每个纵向动作类别最多保留 `--target-count` 个动作候选，并优先保留持续时间最长的区间，最后在每条记录内应用候选间距规则。这样被限额移除的动作不会继续压住附近的动作或覆盖点。默认值为 `500000`，与 PAI 一致，通常不会裁掉当前数据；可设为较小值做平衡抽样。被限额移除的项目会保留在清单中，状态为 `filtered`、原因是 `action_type_target_count_exceeded`。定时 `coverage` 候选不参加限额，继续用于动作区间之间的画面覆盖。若显式传入 `--record`，类别限额只在这次指定的记录集合内统计。
+候选筛选随后会像 PAI 的 `keyframe_auto_select` 一样按动作类别限制样本数：对本次命令处理的所有记录，先验证相机窗口，再为每个纵向动作类别最多保留 `--target-count` 个动作候选，并优先保留持续时间最长的区间，最后在每条记录内应用严格间距规则。如果区间较长的候选因间距规则被抑制，程序会从该类别超额候选中按时长回填与当前已选动作保持足够间距的候选。回填保留已选较长候选，不会回溯替换它们；因此这是类别上限，不保证填满。即使换成几条较短区间可以选满目标数，程序仍优先保留较长区间。默认值为 `500000`，与 PAI 一致，通常不会裁掉当前数据；可设为较小值做平衡抽样。仍被限额排除的项目会保留在清单中，状态为 `filtered`、原因是 `action_type_target_count_exceeded`。定时 `coverage` 候选不参加类别限额，但会遵守相同的起点间距规则。若显式传入 `--record`，类别限额只在这次指定的记录集合内统计。
 
-每条记录输出到 `outputs/local_record_candidates/<record>/`：
+`--minimum-action-duration-sec` 是候选阶段额外施加的最短动作区间门槛，默认 1 秒。它独立于本地纵向动作分类器生成动作区间时使用的最短长度规则；某个区间即使已经被分类器识别，若短于这个候选门槛，仍不会成为 CoC 候选。
+
+每条记录的动作输入和候选输出都默认位于 `outputs/local_record_candidates/<record>/`；使用 `--meta-action-root` 和 `--output-dir` 可将它们分开放置：
 
 ```text
 full_record_meta_action.json
@@ -46,7 +49,7 @@ segment_candidates.json
 contact_sheets/candidate_*.jpg
 ```
 
-`segment_candidates.json` 以 `action_candidates` 和 `coverage_candidates` 两个数组分别保存动作样本与覆盖样本。动作项会保留规则动作类别、区间起止时间和持续时长；覆盖项的动作类别与动作区间为空。每项也会记录筛选状态和原因，包括被选中、时长或类别过滤、相机窗口不完整、以及与其他候选过近而合并。联系表只为最终选中的候选生成。这个流程用于发现值得人工检查的片段，不调用 GPT，也不直接生成 CoC 标签。
+`segment_candidates.json` 以 `action_candidates` 和 `coverage_candidates` 两个数组分别保存动作样本与覆盖样本。动作项会保留规则动作类别、区间起止时间和持续时长；覆盖项的动作类别与动作区间为空。每项也会记录筛选状态和原因，包括被选中、时长或类别过滤、相机窗口不完整、以及与其他候选过近而合并。重跑后，`contact_sheets/` 中不属于当前选中候选的旧 `candidate_*.jpg` 会被清理；其它文件会保留。候选 ID 按本次候选时间顺序生成，改变筛选参数后 ID 可能变化，应以当前 manifest 为准。这个流程用于发现值得人工检查的片段，不调用 GPT，也不直接生成 CoC 标签。
 
 ## 从候选生成 CoC 标注
 
@@ -78,7 +81,7 @@ python -m coc_labeling.local_record_labeling \
   --run-inference
 ```
 
-`--candidate-type` 可设为 `action_span`、`coverage` 或 `all`（默认）。它只控制从候选清单中选哪些事件进入标注，不改变 CoC 模型输入内容；选 `action_span` 时 GPT 仍会看到该事件周围图片、位置推导速度和逐图纵向动作提示。每个候选的相机相对时间直接取自候选清单；单事件入口仍按该时间匹配 16 张图片，并用对应 localization 准备运动数据。同一记录的图片时间表和 localization 文件只读取一次，再供该记录的所有候选复用。输出结构与手动单事件标注一致，按记录和事件时间写在 `outputs/local_record_autolabel_candidates/<record>/event_<seconds>s/`。可用 `--record` 限定记录，也可用 `--candidate-id` 限定单个或多个候选；所选 ID 必须属于 `--candidate-type` 指定的候选池。添加 `--run-inference` 会对筛选出的每个候选各发送一次 API 请求并产生费用；未加该参数时不会读取 API 凭据。
+`--candidate-type` 可设为 `action_span`、`coverage` 或 `all`（默认）。它只控制从候选清单中选哪些事件进入标注，不改变 CoC 模型输入内容；选 `action_span` 时 GPT 仍会看到该事件周围图片、位置推导速度和逐图纵向动作提示。每个候选的相机相对时间直接取自候选清单；单事件入口仍按该时间匹配 16 张图片，并用对应 localization 准备运动数据。同一记录的图片时间表和 localization 文件只读取一次，再供该记录的所有候选复用。标注阶段会校验 manifest 记录的历史、未来和抽帧间隔与当前 CoC 配置一致；不一致时会要求重新筛选候选或恢复对应配置。输出结构与手动单事件标注一致，按记录和事件时间写在 `outputs/local_record_autolabel_candidates/<record>/event_<seconds>s/`。可用 `--record` 限定记录，也可用 `--candidate-id` 限定单个或多个候选；所选 ID 必须属于 `--candidate-type` 指定的候选池。添加 `--run-inference` 会对筛选出的每个候选各发送一次 API 请求并产生费用；未加该参数时不会读取 API 凭据。
 
 ## 准备预览
 
@@ -125,6 +128,7 @@ outputs/local_record_autolabel_mvp/<record>/event_<seconds>s/
 
 ```bash
 python -m coc_labeling.local_record_autolabel \
+  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
   --record 20261019153941_record \
   --event-time-sec 21.6 \
   --run-inference
@@ -134,7 +138,7 @@ python -m coc_labeling.local_record_autolabel \
 
 ## VS Code 调试
 
-仓库的 `.vscode/launch.json` 也提供 `Local data labeling (single record; debug)`、`Local record candidates (single record; debug)` 和 `Local record labeling (selected candidates; prepare only)` 三个启动项，对应动作生成、候选筛选和候选预览。需要模型推理时可在命令行选择候选并显式添加 `--run-inference`。启动前按需修改 `--record`、`--candidate-id` 和输入目录，然后在 VS Code 的 Run and Debug 面板选择配置并按 F5。配置使用本机的 `alpamayo-coc` Python 环境。
+仓库的 `.vscode/launch.json` 也提供 `Local data labeling (single record; debug)`、`Local keyframe auto-select (single record; debug)` 和 `Local record labeling (selected candidates; prepare only)` 三个启动项，对应动作生成、候选筛选和候选预览。需要模型推理时可在命令行选择候选并显式添加 `--run-inference`。启动前按需修改 `--record`、`--candidate-id` 和输入目录，然后在 VS Code 的 Run and Debug 面板选择配置并按 F5。配置使用本机的 `alpamayo-coc` Python 环境。
 
 单次推理输出：
 
@@ -148,8 +152,10 @@ YAML 由现有 `VLMCoCAgent` 写出，`preview_with_coc.mp4` 使用 `scripts/ove
 
 ## 代码结构
 
-命令仍从 `python -m coc_labeling.local_record_autolabel` 启动；这个文件负责参数解析和串起流程。具体实现拆在 `src/coc_labeling/recording_autolabel/`：`camera.py` 负责相机时间戳和选帧，`localization.py` 负责原始位置、10 Hz 重采样和速度，`actions.py` 负责本地纵向 meta-action，`agent.py` 负责组装并调用 CoC agent，`visualization.py` 负责图片预览，`position_artifacts.py` 负责轨迹与运动审计，`artifacts.py` 负责清单和 agent 输入预览，`types.py` 放共享数据结构和参数。
+整条记录的三个阶段分别由 `local_data_labeling.py`、`local_keyframe_auto_select.py` 和 `local_record_labeling.py` 提供入口：第一步从 localization 生成纵向 meta-action，第二步结合相机图片筛选候选，第三步准备候选的 CoC 输入，并可通过 `--run-inference` 调用 GPT。手动指定单个事件的入口仍是 `local_record_autolabel.py`。
+
+这些入口复用 `src/coc_labeling/recording_autolabel/` 中的实现：`camera.py` 负责相机时间戳和选帧，`localization.py` 负责原始位置、10 Hz 重采样和速度，`actions.py` 负责本地纵向 meta-action，`segment_candidates.py` 负责候选筛选规则，`agent.py` 负责组装并调用 CoC agent，`visualization.py` 负责图片预览，`position_artifacts.py` 负责轨迹与运动审计，`artifacts.py` 负责清单和 agent 输入预览，`types.py` 放共享数据结构和参数。
 
 ## 当前限制
 
-当前只实现纵向 meta-action。`v_lat` 是车体瞬时侧向速度，不等同于港口内的横移、斜行或变道方向，因此没有据此生成横向动作；lane 也没有使用地图规则。纵向标签来自规则阈值，可能受定位噪声和低速抖动影响。CoC 描述仍需结合图片并由人工审核，当前入口也不自动发现事件或批量处理记录。
+当前只实现纵向 meta-action。`v_lat` 是车体瞬时侧向速度，不等同于港口内的横移、斜行或变道方向，因此没有据此生成横向动作；lane 也没有使用地图规则。纵向标签来自规则阈值，可能受定位噪声和低速抖动影响。手动单事件入口要求用户提供事件时间；整条记录的候选筛选和多候选处理由上述独立阶段完成。CoC 描述仍需结合图片并由人工审核。

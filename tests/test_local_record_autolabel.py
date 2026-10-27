@@ -18,7 +18,7 @@ from coc_labeling.local_record_autolabel import _load_temporal_config
 from coc_labeling.recording_autolabel.agent import _run_agent, build_agent_data
 from coc_labeling.recording_autolabel.camera import (
     _parse_filename_timestamp,
-    _sample_offsets,
+    sample_offsets,
     select_frames,
 )
 from coc_labeling.recording_autolabel.localization import (
@@ -61,7 +61,7 @@ def test_parse_filename_timestamp_uses_decimal_seconds() -> None:
 
 def test_sample_frames_selects_unique_nearest_images_within_tolerance() -> None:
     start = Decimal(1000)
-    offsets = _sample_offsets(Decimal(2), Decimal(6), Decimal("0.5"))
+    offsets = sample_offsets(Decimal(2), Decimal(6), Decimal("0.5"))
     images = [
         TimedImage(
             path=Path(f"{start + Decimal(index) / 10:.1f}.jpg"),

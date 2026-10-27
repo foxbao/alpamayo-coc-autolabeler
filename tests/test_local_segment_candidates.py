@@ -6,11 +6,14 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from coc_labeling.recording_autolabel.segment_candidates import (
     CandidateSeed,
     SegmentCandidate,
     apply_candidate_separation,
     balance_action_candidates,
+    balance_and_select_candidates,
     candidate_manifest_payload,
     select_segment_candidates,
 )
@@ -25,6 +28,40 @@ def _camera_images() -> list[TimedImage]:
         )
         for index in range(301)
     ]
+
+
+def _action_candidate(
+    candidate_id: str,
+    start: int,
+    end: int,
+    *,
+    action: str = "Stop",
+) -> SegmentCandidate:
+    seed = CandidateSeed(
+        candidate_id=candidate_id,
+        camera_time_sec=Decimal(start),
+        absolute_timestamp=Decimal(1000 + start),
+        localization_time_sec=Decimal(start),
+        source="action_span_start",
+        action_label=action,
+        action_end_localization_time_sec=Decimal(end),
+    )
+    return SegmentCandidate(seed, "selected", selected_frames=[])
+
+
+def _coverage_candidate(candidate_id: str, time_sec: int) -> SegmentCandidate:
+    return SegmentCandidate(
+        CandidateSeed(
+            candidate_id=candidate_id,
+            camera_time_sec=Decimal(time_sec),
+            absolute_timestamp=Decimal(1000 + time_sec),
+            localization_time_sec=Decimal(time_sec),
+            source="periodic_coverage",
+            action_label=None,
+        ),
+        "selected",
+        selected_frames=[],
+    )
 
 
 def test_candidates_convert_time_origins_and_prioritize_action_starts() -> None:
@@ -238,3 +275,104 @@ def test_action_candidate_balance_requires_positive_target_count() -> None:
         assert "at least one" in str(exc)
     else:
         raise AssertionError("expected a positive action candidate target count")
+
+
+def test_balancing_refills_from_distant_candidates_after_strict_separation() -> None:
+    def action_candidate(candidate_id: str, start: int, end: int) -> SegmentCandidate:
+        seed = CandidateSeed(
+            candidate_id=candidate_id,
+            camera_time_sec=Decimal(start),
+            absolute_timestamp=Decimal(1000 + start),
+            localization_time_sec=Decimal(start),
+            source="action_span_start",
+            action_label="Stop",
+            action_end_localization_time_sec=Decimal(end),
+        )
+        return SegmentCandidate(seed, "selected", selected_frames=[])
+
+    longest = action_candidate("candidate_a", 10, 15)
+    nearby = action_candidate("candidate_b", 11, 15)
+    distant = action_candidate("candidate_c", 30, 33)
+
+    summary = balance_and_select_candidates(
+        [[longest, nearby, distant]],
+        target_count=2,
+        minimum_separation_sec=Decimal(2),
+    )
+
+    assert summary == {"Stop": (3, 2)}
+    assert longest.status == "selected"
+    assert nearby.status == "suppressed"
+    assert distant.status == "selected"
+    selected_times = [
+        candidate.seed.camera_time_sec
+        for candidate in (longest, nearby, distant)
+        if candidate.status == "selected"
+    ]
+    assert selected_times == [Decimal(10), Decimal(30)]
+
+
+def test_cross_record_backfill_obeys_global_action_target_count() -> None:
+    longest = _action_candidate("longest", 10, 20)
+    nearby = _action_candidate("nearby", 11, 20)
+    distant = _action_candidate("distant", 40, 48)
+    extra = _action_candidate("extra", 50, 57)
+
+    summary = balance_and_select_candidates(
+        [[longest, nearby], [distant, extra]],
+        target_count=2,
+        minimum_separation_sec=Decimal(3),
+    )
+
+    selected = [item for item in (longest, nearby, distant, extra) if item.status == "selected"]
+    assert summary == {"Stop": (4, 2)}
+    assert selected == [longest, distant]
+
+
+def test_backfilled_action_candidate_suppresses_nearby_coverage_candidate() -> None:
+    longest = _action_candidate("longest", 10, 18)
+    nearby = _action_candidate("nearby", 11, 18)
+    backfill = _action_candidate("backfill", 20, 26)
+    coverage = _coverage_candidate("coverage", 21)
+
+    balance_and_select_candidates(
+        [[longest, nearby, backfill, coverage]],
+        target_count=2,
+        minimum_separation_sec=Decimal(3),
+    )
+
+    assert longest.status == "selected"
+    assert backfill.status == "selected"
+    assert coverage.status == "suppressed"
+    assert coverage.merged_into == backfill.seed.candidate_id
+
+
+def test_greedy_backfill_can_leave_target_underfilled_to_keep_longer_candidates() -> None:
+    shorter_early = _action_candidate("shorter_early", 0, 3)
+    longest_clustered = _action_candidate("longest_clustered", 2, 9)
+    medium_clustered = _action_candidate("medium_clustered", 4, 8)
+    longest_distant = _action_candidate("longest_distant", 15, 23)
+
+    summary = balance_and_select_candidates(
+        [[shorter_early, longest_clustered, medium_clustered, longest_distant]],
+        target_count=3,
+        minimum_separation_sec=Decimal(3),
+    )
+
+    assert summary == {"Stop": (4, 2)}
+    assert shorter_early.status == "filtered"
+    assert longest_clustered.status == "selected"
+    assert medium_clustered.status == "suppressed"
+    assert longest_distant.status == "selected"
+
+
+def test_balancing_rejects_pending_action_candidates() -> None:
+    candidate = _action_candidate("pending_action", 10, 12)
+    candidate.status = "pending"
+
+    with pytest.raises(ValueError, match="must pass initial window and separation checks"):
+        balance_and_select_candidates(
+            [[candidate]],
+            target_count=1,
+            minimum_separation_sec=Decimal(2),
+        )

@@ -12,14 +12,18 @@ from .recording_autolabel.localization import load_localization_positions
 from .recording_autolabel.meta_action_artifacts import write_full_record_meta_action
 from .recording_autolabel.scenario import LocalTemporalScenario
 
-DEFAULT_INPUT_ROOT = Path("/home/baojiali/Downloads/disk3/20261019_lin_007_out")
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "outputs" / "local_record_candidates"
 
 
 def _parser() -> argparse.ArgumentParser:
     """定义输入记录及 meta-action 输出目录。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-root", type=Path, default=DEFAULT_INPUT_ROOT)
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        required=True,
+        help="Root directory containing local recording folders.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
         "--record",
@@ -30,7 +34,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _validate_record_names(record_names: list[str]) -> None:
-    """阻止记录参数通过路径片段访问 input-root 之外的目录。"""
+    """验证记录名安全且唯一，避免重复读取或覆盖同一记录的输出。"""
+    if len(record_names) != len(set(record_names)):
+        raise SystemExit("--record must not contain duplicate record names")
     for record_name in record_names:
         if Path(record_name).name != record_name or record_name in {".", ".."}:
             raise SystemExit(f"--record must be a directory name: {record_name}")

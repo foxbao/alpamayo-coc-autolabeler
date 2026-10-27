@@ -58,7 +58,6 @@ __all__ = [
     "main",
 ]
 
-DEFAULT_INPUT_ROOT = Path("/home/baojiali/Downloads/disk3/20261019_lin_007_out")
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "outputs" / "local_record_autolabel_mvp"
 DEFAULT_API_CONFIG = Path.home() / ".config/alpamayo-coc/openai_api.yaml"
 DEFAULT_MODEL = "gpt-6.1-sol"
@@ -113,7 +112,12 @@ def _load_temporal_config() -> tuple[Decimal, Decimal, Decimal, Any]:
 def _make_parser() -> argparse.ArgumentParser:
     """定义命令行参数；记录名和事件相对秒数必须由调用者提供。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-root", type=Path, default=DEFAULT_INPUT_ROOT)
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        required=True,
+        help="Root directory containing local recording folders.",
+    )
     parser.add_argument("--record", required=True, help="Record directory name")
     parser.add_argument("--event-time-sec", required=True, type=_parse_event_time)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_ROOT)

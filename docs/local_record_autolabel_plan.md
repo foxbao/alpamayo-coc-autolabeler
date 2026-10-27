@@ -5,11 +5,10 @@
 > 数据根目录：`/home/baojiali/Downloads/disk3/20261019_lin_007_out`
 >
 > 当前验证记录：`20261019153941_record`，人工选定事件时间 `21.6 s`
-> 历史评审记录：[`local_record_autolabel_plan_response_v4.md`](local_record_autolabel_plan_response_v4.md) 针对的是更早的图片输入阶段，不是当前实现规格。
 
 ## 目标和范围
 
-当前工具用于一条本地记录的一个人工选定时刻：从 front camera 取图，从 localization 估计车辆运动状态，准备 CoC Agent 输入；用户显式传入 `--run-inference` 后，才调用一次模型并生成待人工审核的结果。它是本地数据适配与单事件验证工具，不会自动发现事件，也不做批量数据集标注。
+`local_record_autolabel` 入口用于一条本地记录的一个人工选定时刻：从 front camera 取图，从 localization 估计车辆运动状态，准备 CoC Agent 输入；用户显式传入 `--run-inference` 后，才调用一次模型并生成待人工审核的结果。这个单事件入口本身不自动发现事件。整条记录的候选由独立的 `local_data_labeling` 和 `local_keyframe_auto_select` 阶段生成；候选筛选规则和运行方式见 [`local_record_autolabel.md`](local_record_autolabel.md)。
 
 当前不把 `chassis`、`planning` 或旧版 Century 源码作为运行时输入。规划结果和相机画面曾用于离线核对坐标解释；它们不会作为本工具的 CoC Agent 输入。
 
@@ -87,7 +86,7 @@
 3. 在其余记录和不同运动状态（停车、倒车、转弯、横移）上复查：位置差分、姿态投影、候选 `linear_velocity` 及视频是否相互吻合。确认 `linear_velocity` 的帧语义后，才决定能否把它作为主速度来源或校验真值。
 4. 验证 32 ms 原始插值上限和 0.5 秒差分窗口对当前定位采样抖动及速度变化是否合适；若调整，应同时更新审计产物和回归测试。
 
-这些确认完成前，工具继续限定为人工指定事件的单记录验证；不增加自动事件检测或批量标注，也不把 `v_lat` 当作变道标签。CoC 输出仍须人工审核。
+这些数据语义确认仍需继续，但不妨碍当前规则候选流程运行。`local_record_autolabel` 单事件入口仍由用户指定事件时间；整条记录的动作提示由 `local_data_labeling` 生成，候选由 `local_keyframe_auto_select` 按规则筛选，`local_record_labeling` 可准备或推理选中的候选。无论通过哪个入口生成，CoC 输出仍须人工审核；`v_lat` 也不作为变道标签。
 
 ## 运行方式
 

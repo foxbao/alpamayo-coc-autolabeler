@@ -76,7 +76,7 @@ def load_timed_images(camera_dir: Path) -> list[TimedImage]:
     return sorted(images, key=lambda image: (image.timestamp, image.path.name))
 
 
-def _sample_offsets(
+def sample_offsets(
     history_sec: Decimal, future_sec: Decimal, interval_sec: Decimal
 ) -> list[Decimal]:
     """生成历史和未来采样时刻；事件时刻 t=0 只包含一次。
@@ -179,7 +179,7 @@ def event_timestamp(selected: Sequence[SelectedFrame]) -> Decimal:
     raise ValueError("Selected CoC timestamps must include the event time t=0.0s")
 
 
-def _load_rgb_frames(selected: Sequence[SelectedFrame]) -> list[np.ndarray]:
+def load_rgb_frames(selected: Sequence[SelectedFrame]) -> list[np.ndarray]:
     """用 OpenCV 将选中的 JPEG 读成现有 VLM 封装所需的 BGR 数组。
 
     例如，一张 1920×1080 的图片会成为形状为 ``(1080, 1920, 3)`` 的数组。
@@ -228,9 +228,9 @@ class ImgLoader:
         selected_frames = select_frames(
             images,
             event_time_sec,
-            _sample_offsets(self.history_sec, self.future_sec, self.interval_sec),
+            sample_offsets(self.history_sec, self.future_sec, self.interval_sec),
         )
-        decoded_frames = _load_rgb_frames(selected_frames)
+        decoded_frames = load_rgb_frames(selected_frames)
         return LoadedImages(
             selected_frames=selected_frames,
             decoded_frames=decoded_frames,
