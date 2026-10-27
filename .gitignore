@@ -2,6 +2,10 @@ __pycache__
 **/__pycache__
 *.pyc
 .vscode
+.conda-envs/
+src/*.egg-info/
+/data/pai_clip_sample/
+/outputs/local_record_autolabel_mvp/
 */*.DS_Store
 src/*_egg/
 tutorials/_outputs/
