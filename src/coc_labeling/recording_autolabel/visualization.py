@@ -50,36 +50,43 @@ def _annotate_frame(frame: np.ndarray, label: str) -> np.ndarray:
     return annotated
 
 
-def write_previews(
-    selected: Sequence[SelectedFrame], frames: Sequence[np.ndarray], output_dir: Path
-) -> tuple[Path, Path]:
-    """生成带说明的联系表和预览视频。
-
-    默认 16 帧排成每行 4 张的联系表；视频按 2 fps 写入，因此总时长为 8 秒。
-    两种预览中的标签都来自相对事件时间和源图片文件名。
-    """
+def _render_contact_sheet(
+    selected: Sequence[SelectedFrame],
+    frames: Sequence[np.ndarray],
+    *,
+    header_text: str | None = None,
+) -> np.ndarray:
+    """把选中帧排成网格；可选标题用于显示候选时间和动作提示。"""
     if len(selected) != len(frames) or not frames:
         raise ValueError("Selected-frame metadata and image arrays must have equal non-zero length")
-    # 这两个文件都用于人工检查；标记只画在图片副本上，
-    # 不会改动随后传给模型的源图片数组。
-    output_dir.mkdir(parents=True, exist_ok=True)
     source_height, source_width = frames[0].shape[:2]
     thumbnail_height = max(1, round(THUMBNAIL_WIDTH * source_height / source_width))
     cell_height = thumbnail_height + 44
+    header_lines = textwrap.wrap(header_text, width=105) if header_text else []
+    header_height = 44 + 30 * len(header_lines) if header_lines else 0
     sheet_shape = (
-        cell_height * math.ceil(len(frames) / PREVIEW_COLUMNS),
+        header_height + cell_height * math.ceil(len(frames) / PREVIEW_COLUMNS),
         THUMBNAIL_WIDTH * PREVIEW_COLUMNS,
         3,
     )
     sheet = np.zeros(sheet_shape, dtype=np.uint8)
+    for line_index, line in enumerate(header_lines):
+        cv2.putText(
+            sheet,
+            line[:130],
+            (12, 30 + line_index * 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.66,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
 
-    normalized_frames: list[np.ndarray] = []
     for index, (item, frame) in enumerate(zip(selected, frames)):
         if frame.shape[:2] != (source_height, source_width):
             frame = cv2.resize(frame, (source_width, source_height))
-        normalized_frames.append(frame)
         row, column = divmod(index, PREVIEW_COLUMNS)
-        x, y = column * THUMBNAIL_WIDTH, row * cell_height
+        x, y = column * THUMBNAIL_WIDTH, header_height + row * cell_height
         thumbnail = cv2.resize(frame, (THUMBNAIL_WIDTH, thumbnail_height))
         sheet[y : y + thumbnail_height, x : x + THUMBNAIL_WIDTH] = thumbnail
         label = (
@@ -103,8 +110,46 @@ def write_previews(
             1,
             cv2.LINE_AA,
         )
+    return sheet
+
+
+def write_contact_sheet(
+    selected: Sequence[SelectedFrame],
+    frames: Sequence[np.ndarray],
+    output_path: Path,
+    *,
+    header_text: str | None = None,
+) -> Path:
+    """只生成联系表 JPEG，可选标题说明候选时刻和纵向动作。"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet = _render_contact_sheet(selected, frames, header_text=header_text)
+    if not cv2.imwrite(str(output_path), sheet):
+        raise RuntimeError(f"Could not write contact sheet: {output_path}")
+    return output_path
+
+
+def write_previews(
+    selected: Sequence[SelectedFrame], frames: Sequence[np.ndarray], output_dir: Path
+) -> tuple[Path, Path]:
+    """生成带说明的联系表和预览视频。
+
+    默认 16 帧排成每行 4 张的联系表；视频按 2 fps 写入，因此总时长为 8 秒。
+    两种预览中的标签都来自相对事件时间和源图片文件名。
+    """
+    if len(selected) != len(frames) or not frames:
+        raise ValueError("Selected-frame metadata and image arrays must have equal non-zero length")
+    # 这两个文件都用于人工检查；标记只画在图片副本上，
+    # 不会改动随后传给模型的源图片数组。
+    output_dir.mkdir(parents=True, exist_ok=True)
+    normalized_frames: list[np.ndarray] = []
+    source_height, source_width = frames[0].shape[:2]
+    for frame in frames:
+        if frame.shape[:2] != (source_height, source_width):
+            frame = cv2.resize(frame, (source_width, source_height))
+        normalized_frames.append(frame)
 
     contact_sheet = output_dir / "contact_sheet.jpg"
+    sheet = _render_contact_sheet(selected, normalized_frames)
     if not cv2.imwrite(str(contact_sheet), sheet):
         raise RuntimeError(f"Could not write contact sheet: {contact_sheet}")
 

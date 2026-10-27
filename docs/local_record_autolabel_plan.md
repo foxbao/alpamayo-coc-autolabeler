@@ -46,7 +46,7 @@
 
 ## 当前代码实际执行的流程
 
-入口为 `python -m coc_labeling.local_record_autolabel`，主要实现位于 `src/coc_labeling/local_recording/`。
+入口为 `python -m coc_labeling.local_record_autolabel`，主要实现位于 `src/coc_labeling/recording_autolabel/`。
 
 1. **确定事件和图片。** 事件相对时间以 front-camera 目录中最早图片的时间戳为起点。按 CoC 时间配置取事件前 2 秒和从事件时刻起的 6 秒窗口，图片目标间隔为 0.5 秒，共 16 张（4 张历史、12 张未来）。单张图片与目标时间相差不得超过 50 ms，源图不能重复使用。
 2. **把定位样本放到事件时间轴。** 按 localization 文件名时间戳排序，并把该时间戳当作采样时刻。事件的绝对 Unix 时间直接用于查询定位样本；代码没有拟合跨传感器 offset，也不外推。位置插值两端原始样本间隔上限为 32 ms。
@@ -60,16 +60,17 @@
    ```
 
    `v_lat` 是车体坐标下的瞬时侧向速度，不等同于变道方向。位置或姿态不可可靠取得时，对应值标为 `Not Available`。
-5. **构造 Agent 输入和审核材料。** 17 个时刻的 `v_long`、`v_lat`、`v_ground` 写入 `ego_text`；meta-action 仍为 `Not Available`。`linear_velocity` 的原值及其按车体 FLU 水平分量工作假设与位置推导速度的差异写入审计文件，但不进入 Agent 输入。四条记录的核对显示，先把原始 `linear_velocity.x/y` 按 x 前、y 左用 orientation 旋转到 map，比直接按 map-XY 解释更一致；这仍需生产端确认，且 z 轴正方向未单独验证。prepare-only 生成帧清单、输入预览、位置轨迹及速度审计；默认不加载 API 凭据或请求模型。显式传入 `--run-inference` 才生成 CoC YAML、叠字视频和带 CoC 的联系表。
+5. **构造 Agent 输入和审核材料。** 17 个时刻的 `v_long`、`v_lat` 写入 `ego_text`；`v_ground` 只保留在审计文件，不发给 Agent，因为它是同一水平速度的无方向大小，等于 body-frame 分量的范数。另用同一条 10 Hz 位置轨迹生成 PAI 风格的纵向 meta-action，并按 0.5 秒图片时刻写入 `all_meta_action_str`；`lateral` 和 `lane` 继续为 `Not Available`。`linear_velocity` 的原值及其按车体 FLU 水平分量工作假设与位置推导速度的差异写入审计文件，但不进入 Agent 输入。四条记录的核对显示，先把原始 `linear_velocity.x/y` 按 x 前、y 左用 orientation 旋转到 map，比直接按 map-XY 解释更一致；这仍需生产端确认，且 z 轴正方向未单独验证。prepare-only 生成帧清单、输入预览、位置轨迹、速度审计和 `longitudinal_meta_action.json`；默认不加载 API 凭据或请求模型。显式传入 `--run-inference` 才生成 CoC YAML、叠字视频和带 CoC 的联系表。
 
-当前实现假设的集中说明见 [`local_record_coordinate_conversion.md`](local_record_coordinate_conversion.md)，使用方式见 [`local_record_autolabel.md`](local_record_autolabel.md)。生成的 `position_motion_audit.json` 会记录时间来源、差分方法、姿态解释、速度映射和坐标不确定性。
+当前实现假设的集中说明见 [`local_record_coordinate_conversion.md`](local_record_coordinate_conversion.md)，使用方式见 [`local_record_autolabel.md`](local_record_autolabel.md)。生成的 `position_motion_audit.json` 会记录时间来源、差分方法、姿态解释、速度映射和坐标不确定性；`longitudinal_meta_action.json` 记录本地纵向分类的阈值、10 Hz 动作点和动作区间。
 
 ## 当前验证结果
 
 - `20261019153941_record` 的 localization 序列有 3,698 个样本，覆盖约 30 秒；平均约 123.3 Hz，平均间隔约 8.11 ms。开头有约 424.6 ms 的样本间隔。
 - 事件 `21.6 s` 的 10 Hz 轨迹网格覆盖 `−2.3` 到 `+6.3 s`。已有审计记录了 4 段超过 32 ms 的原始间隔；当前事件所需的 17 个位置差分和姿态样本均有效。
 - 该事件点的输出约为 `v_long=+5.59 m/s`、`v_lat=+0.01 m/s`、`v_ground=5.59 m/s`。这说明此前把约 `5.6 m/s` 解释为向右运动与 FLU 工作假设不符；它本身不能证明所有记录都采用 FLU。
-- 当前回归测试覆盖定位插值、重采样、中心差分、姿态插值、FLU 逆旋转、右正 `v_lat`、输入提示和输出审计。最近一次相关验证为 `23 passed`，Ruff 检查通过；prepare-only smoke test 不调用模型。
+- `21.6 s` 事件的纵向分类使用 81/81 个有效 10 Hz 速度点；16 个图片时刻在 `agent_input_preview.json` 中得到纵向动作。该次预览在 `t=0.0–1.0 s` 和 `t=2.5–4.0 s` 标为 `Gentle Deceleration`，其余采样时刻为 `Maintain Speed`；这是一轮规则结果，尚需人工结合视频核验。
+- 当前回归测试覆盖定位插值、重采样、中心差分、姿态插值、FLU 逆旋转、右正 `v_lat`、纵向动作分类、输入提示和输出审计。最近一次完整测试为 `36 passed`，Ruff 检查通过；prepare-only smoke test 不调用模型。
 
 ## 早期方案哪些已被取代
 

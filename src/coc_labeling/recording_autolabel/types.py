@@ -34,10 +34,26 @@ LOCAL_POSITION_EGO_STATE_PROMPT = (
     "axis is interpreted as forward and local y as left, based on trajectory and front-camera "
     "evidence. v_long is forward-positive; v_lat is right-positive, so it is the negative of "
     "body-left velocity. v_lat is instantaneous body-frame sideways velocity, not lane-change "
-    "direction. v_ground is the directionless horizontal speed magnitude from position "
-    "differences. A missing v_long or v_lat means the position derivative or orientation "
-    "could not be sampled reliably; v_ground may still be available. Use camera frames to "
-    "determine actions and lane changes."
+    "direction. A missing v_long or v_lat means the position derivative or orientation could "
+    "not be sampled reliably. Use camera frames to determine actions and lane changes."
+)
+LOCAL_META_ACTION_PROMPT = (
+    "These local meta-actions are rule-based labels derived from the localization position "
+    "trajectory and body-forward velocity. Longitudinal labels are PAI-style hints for "
+    "acceleration, deceleration, maintaining speed, stopping, or reversing; they are not "
+    "vehicle control commands and may be noisy. This port recording has no lane graph, so "
+    "lateral and lane are intentionally Not Available. Use the camera frames as the primary "
+    "evidence and do not infer a lane change from the missing fields."
+)
+LOCAL_SCENE_CONTEXT_PROMPT = (
+    "Scene context: These recordings show an IGV operating in a Qingdao port. This dataset "
+    "does not provide conventional traffic-lane annotations or a lane graph. Do not assume "
+    "the vehicle is following or changing a road lane, and do not use ‘keep lane’, ‘stay in "
+    "lane’, or ‘lane change’ as a generic description or fallback. Describe the visible path "
+    "using port aisles, open drivable space, container rows, obstacles, and relative direction. "
+    "For routine travel without a notable maneuver, describe continuing along the open path or "
+    "aisle at a steady speed. Mention a lane only when a clearly visible marked lane is "
+    "relevant to the observed action."
 )
 
 
@@ -48,6 +64,7 @@ class TimedImage:
     path: Path
     timestamp: Decimal
 
+
 @dataclass(frozen=True)
 class SelectedFrame:
     """为某个相对 CoC 事件时刻选中的源图片及其时间误差。"""
@@ -56,6 +73,7 @@ class SelectedFrame:
     target_timestamp: Decimal
     image: TimedImage
     error_sec: Decimal
+
 
 @dataclass(frozen=True)
 class TimedPosition:
@@ -68,6 +86,17 @@ class TimedPosition:
     orientation_wxyz: tuple[float, float, float, float] | None = None
     linear_velocity_xyz: tuple[float, float, float] | None = None
 
+
+@dataclass(frozen=True)
+class LocalMotionChunk:
+    """本地自车动作区间，对应 PAI 的 ``TemporalMotionChunk``。"""
+
+    agent_token: str
+    action_type: str
+    start_time: Decimal
+    end_time: Decimal
+
+
 @dataclass(frozen=True)
 class ResampledPosition:
     """一条事件相对 10 Hz 网格上的定位位置；缺失点保留错误原因。"""
@@ -79,6 +108,7 @@ class ResampledPosition:
     y: float | None
     position_error: str | None
     connected_to_previous: bool
+
 
 @dataclass(frozen=True)
 class PositionMotionSample:

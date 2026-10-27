@@ -1,6 +1,84 @@
 # 本地记录 CoC MVP 使用说明
 
-当前入口处理一条记录和一个人工指定的相对时刻，用 front-camera 文件名时间取出 CoC 所需的 2 秒历史、6 秒未来窗口。它读取 localization 文件名时间、JSON 中的 `position.x/y` 和 `orientation`，生成 10 Hz 位置轨迹；位置差分得到地图速度，再用同一时刻的姿态转成车体 `v_long/v_lat`，按 0.5 秒间隔提供给 agent。它不读取 chassis 或 planning，也不自动发现动作。
+当前入口处理一条记录和一个人工指定的相对时刻，用 front-camera 文件名时间取出 CoC 所需的 2 秒历史、6 秒未来窗口。它读取 localization 文件名时间、JSON 中的 `position.x/y` 和 `orientation`，生成 10 Hz 位置轨迹；位置差分得到地图速度，再用同一时刻的姿态转成车体 `v_long/v_lat`，按 0.5 秒间隔提供给 agent。它还在同一条 10 Hz 轨迹上生成 PAI 风格的纵向 meta-action。它不读取 chassis 或 planning，也不自动发现动作。
+
+## 自动筛选整条记录中的 CoC 候选片段
+
+整段记录的动作生成和相机候选筛选分成两个命令。这样调整候选时间间距或覆盖频率时，可以重复第二步，不必重新读取 localization 和计算动作。两步默认共用 `outputs/local_record_candidates/`。
+
+第一步只读取 localization，按 10 Hz 轨迹生成纵向动作点和区间：
+
+```bash
+python -m coc_labeling.local_data_labeling \
+  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --record \
+    20261019153841_record \
+    20261019153911_record \
+    20261019153941_record \
+    20261019154011_record \
+  --output-dir outputs/local_record_candidates
+```
+
+不传 `--record` 时，会处理 `--input-root` 下所有含 `localization/` 子目录的记录。每条记录会写出 `full_record_meta_action.json`，包含动作点、动作区间和定位时间原点；这些仍是供检查的规则提示，不是人工真值。
+
+第二步只读取 front-camera 图片和第一步生成的动作 JSON，筛选候选事件、检查每个事件的图像窗口，并生成候选联系表：
+
+```bash
+python -m coc_labeling.local_keyframe_auto_select \
+  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --record \
+    20261019153841_record \
+    20261019153911_record \
+    20261019153941_record \
+    20261019154011_record \
+  --output-dir outputs/local_record_candidates
+```
+
+候选阶段不会重新读取 localization，也不会重新计算 meta-action。缺少 `full_record_meta_action.json` 时，命令会提示先运行 `python -m coc_labeling.local_data_labeling`。默认每 5 秒生成一个无动作类别的覆盖点，并要求最终保留的候选至少相隔 2 秒；动作区间起点优先于附近的覆盖点。动作候选默认至少持续 1 秒（10 Hz 下 10 个 tick），也可以只保留指定类别，例如 `--actions "Gentle Deceleration" Stop`；这些筛选不会影响定时覆盖候选。可用 `--minimum-action-duration-sec` 调整动作时长门槛，也可用 `--periodic-interval-sec` 和 `--minimum-separation-sec` 调整覆盖频率及近邻间距。
+
+候选筛选随后会像 PAI 的 `keyframe_auto_select` 一样按动作类别限制样本数：对本次命令处理的所有记录，先验证相机窗口，再为每个纵向动作类别最多保留 `--target-count` 个动作候选，并优先保留持续时间最长的区间，最后在每条记录内应用候选间距规则。这样被限额移除的动作不会继续压住附近的动作或覆盖点。默认值为 `500000`，与 PAI 一致，通常不会裁掉当前数据；可设为较小值做平衡抽样。被限额移除的项目会保留在清单中，状态为 `filtered`、原因是 `action_type_target_count_exceeded`。定时 `coverage` 候选不参加限额，继续用于动作区间之间的画面覆盖。若显式传入 `--record`，类别限额只在这次指定的记录集合内统计。
+
+每条记录输出到 `outputs/local_record_candidates/<record>/`：
+
+```text
+full_record_meta_action.json
+segment_candidates.json
+contact_sheets/candidate_*.jpg
+```
+
+`segment_candidates.json` 以 `action_candidates` 和 `coverage_candidates` 两个数组分别保存动作样本与覆盖样本。动作项会保留规则动作类别、区间起止时间和持续时长；覆盖项的动作类别与动作区间为空。每项也会记录筛选状态和原因，包括被选中、时长或类别过滤、相机窗口不完整、以及与其他候选过近而合并。联系表只为最终选中的候选生成。这个流程用于发现值得人工检查的片段，不调用 GPT，也不直接生成 CoC 标签。
+
+## 从候选生成 CoC 标注
+
+候选生成后，可将所有 `selected` 项交给现有单事件准备流程。默认只生成图片预览、轨迹与定位审计、Agent 输入快照；检查后可对一个候选显式请求 GPT：
+
+```bash
+# 对指定记录的全部 selected 候选只准备输入，不调用模型
+python -m coc_labeling.local_record_labeling \
+  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --candidate-root outputs/local_record_candidates \
+  --record 20261019153941_record \
+  --output-dir outputs/local_record_autolabel_candidates
+
+# 只准备动作区间候选；改成 coverage 可只准备定时覆盖候选
+python -m coc_labeling.local_record_labeling \
+  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --candidate-root outputs/local_record_candidates \
+  --record 20261019153941_record \
+  --candidate-type action_span \
+  --output-dir outputs/local_action_span_labels
+
+# 先从 segment_candidates.json 选定 candidate ID，再只推理这一项
+python -m coc_labeling.local_record_labeling \
+  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --candidate-root outputs/local_record_candidates \
+  --record 20261019153941_record \
+  --candidate-id candidate_003 \
+  --output-dir outputs/local_record_autolabel_candidates \
+  --run-inference
+```
+
+`--candidate-type` 可设为 `action_span`、`coverage` 或 `all`（默认）。它只控制从候选清单中选哪些事件进入标注，不改变 CoC 模型输入内容；选 `action_span` 时 GPT 仍会看到该事件周围图片、位置推导速度和逐图纵向动作提示。每个候选的相机相对时间直接取自候选清单；单事件入口仍按该时间匹配 16 张图片，并用对应 localization 准备运动数据。同一记录的图片时间表和 localization 文件只读取一次，再供该记录的所有候选复用。输出结构与手动单事件标注一致，按记录和事件时间写在 `outputs/local_record_autolabel_candidates/<record>/event_<seconds>s/`。可用 `--record` 限定记录，也可用 `--candidate-id` 限定单个或多个候选；所选 ID 必须属于 `--candidate-type` 指定的候选池。添加 `--run-inference` 会对筛选出的每个候选各发送一次 API 请求并产生费用；未加该参数时不会读取 API 凭据。
 
 ## 准备预览
 
@@ -27,6 +105,7 @@ outputs/local_record_autolabel_mvp/<record>/event_<seconds>s/
   position_trajectory_10hz.json
   position_trajectory.png
   position_motion_audit.json
+  longitudinal_meta_action.json
   agent_input_preview.json
 ```
 
@@ -34,7 +113,11 @@ outputs/local_record_autolabel_mvp/<record>/event_<seconds>s/
 
 `position_trajectory_10hz.json` 保存事件相对 10 Hz 网格上的 map-XY 位置。每个网格点只会在前后原始定位样本相隔不超过 32 ms 时插值；原始间隔超过 32 ms 的区段会单独列在 `raw_sampling_gaps_over_limit` 中。`position_trajectory.png` 显示 10 Hz 轨迹，红点标出跨越原始大间隔的位置段；图上的 map-XY 轨迹方向不代表车头方向。
 
-`position_motion_audit.json` 记录 `-2.0` 至 `+6.0` 秒、每 0.5 秒一个的 17 个位置差分速度点、姿态、车体速度和有效性。对当前四条记录，数据核对支持将 orientation 解释为车体 FLU 到 map-XY 的旋转；地图速度逆旋转后，`v_long = body_x`、`v_lat = -body_y`（右正）。这项判断来自轨迹方向、规划 `theta` 和前视画面运动，JSON 本身没有坐标系标签；详细依据见 [local_record_coordinate_conversion.md](local_record_coordinate_conversion.md)。此外，四条记录的 `linear_velocity.x/y` 按车体 FLU 的水平分量解释并用 orientation 旋转到 map 后，与位置差分速度明显更一致，因此代码把“`linear_velocity` 水平分量是车体 FLU”记录为强支持的工作假设；z 轴正方向未单独核实。它仍只用于审计，不直接替代位置推导速度。`agent_input_preview.json` 展示实际送入 agent 的输入，`ego_text` 包含 `v_long`、`v_lat` 和地面速度大小；姿态缺失时，前两个量显示 `Not Available`，位置速度仍可提供地面速度。默认 prepare-only 不读取 API 凭据、不初始化模型。
+`position_motion_audit.json` 记录 `-2.0` 至 `+6.0` 秒、每 0.5 秒一个的 17 个位置差分速度点、姿态、车体速度和有效性。对当前四条记录，数据核对支持将 orientation 解释为车体 FLU 到 map-XY 的旋转；地图速度逆旋转后，`v_long = body_x`、`v_lat = -body_y`（右正）。这项判断来自轨迹方向、规划 `theta` 和前视画面运动，JSON 本身没有坐标系标签；详细依据见 [local_record_coordinate_conversion.md](local_record_coordinate_conversion.md)。此外，四条记录的 `linear_velocity.x/y` 按车体 FLU 的水平分量解释并用 orientation 旋转到 map 后，与位置差分速度明显更一致，因此代码把“`linear_velocity` 水平分量是车体 FLU”记录为强支持的工作假设；z 轴正方向未单独核实。它仍只用于审计，不直接替代位置推导速度。`agent_input_preview.json` 展示实际送入 agent 的输入，`ego_text` 只包含 `v_long` 和 `v_lat`；`v_ground` 仍保留在 `position_motion_audit.json`，不发送给 Agent。姿态缺失时，前两个量显示 `Not Available`。默认 prepare-only 不读取 API 凭据、不初始化模型。
+
+`longitudinal_meta_action.json` 保存 10 Hz 动作点和清理后的动作区间。分类器使用位置推导的车体前向速度 `v_long`，并使用二维地速作为 Stop 的保护条件；它不读取 chassis、`linear_velocity`、`v_lat` 或 lane map。动作词表与 PAI-AV 一致，包括 `Strong/Gentle Acceleration`、`Strong/Gentle Deceleration`、`Maintain Speed`、`Stop` 和 `Reverse`。这些标签是给模型的参考先验，不是控制指令，仍需人工检查。每张 2 Hz 图片从最近的 10 Hz 动作点取纵向标签。港口没有明确 lane graph，因此 `lateral` 和 `lane` 在 Agent 输入中继续写为 `Not Available`。
+
+本地分类器复用 PAI 的动作词表和主要阈值，并按 10 Hz 轨迹做居中平滑、短段清理和最小速度变化检查；它是针对当前 localization 输入写的轻量规则实现，并未直接调用 PAI 的 trajdata/lane 生成流程。初始阈值还需要在更多港口片段上核对。
 
 ## 单次 GPT 推理
 
@@ -51,7 +134,7 @@ python -m coc_labeling.local_record_autolabel \
 
 ## VS Code 调试
 
-仓库的 `.vscode/launch.json` 提供两个启动项：`Local record autolabel (prepare preview)` 只生成预览，适合逐步检查读图和选帧；`Local record autolabel (GPT inference; sends API request)` 会调用模型并产生 API 费用。输出默认放在仓库的 `outputs/local_record_autolabel_mvp/` 下。启动前按需修改 `--record`、`--event-time-sec` 和输入目录，然后在 VS Code 的 Run and Debug 面板选择配置并按 F5。配置使用本机的 `alpamayo-coc` Python 环境。
+仓库的 `.vscode/launch.json` 也提供 `Local data labeling (single record; debug)`、`Local record candidates (single record; debug)` 和 `Local record labeling (selected candidates; prepare only)` 三个启动项，对应动作生成、候选筛选和候选预览。需要模型推理时可在命令行选择候选并显式添加 `--run-inference`。启动前按需修改 `--record`、`--candidate-id` 和输入目录，然后在 VS Code 的 Run and Debug 面板选择配置并按 F5。配置使用本机的 `alpamayo-coc` Python 环境。
 
 单次推理输出：
 
@@ -65,8 +148,8 @@ YAML 由现有 `VLMCoCAgent` 写出，`preview_with_coc.mp4` 使用 `scripts/ove
 
 ## 代码结构
 
-命令仍从 `python -m coc_labeling.local_record_autolabel` 启动；这个文件负责参数解析和串起流程。具体实现拆在 `src/coc_labeling/local_recording/`：`camera.py` 负责相机时间戳和选帧，`localization.py` 负责原始位置、10 Hz 重采样和速度，`agent.py` 负责组装并调用 CoC agent，`visualization.py` 负责图片预览，`position_artifacts.py` 负责轨迹与运动审计，`artifacts.py` 负责清单和 agent 输入预览，`types.py` 放共享数据结构和参数。
+命令仍从 `python -m coc_labeling.local_record_autolabel` 启动；这个文件负责参数解析和串起流程。具体实现拆在 `src/coc_labeling/recording_autolabel/`：`camera.py` 负责相机时间戳和选帧，`localization.py` 负责原始位置、10 Hz 重采样和速度，`actions.py` 负责本地纵向 meta-action，`agent.py` 负责组装并调用 CoC agent，`visualization.py` 负责图片预览，`position_artifacts.py` 负责轨迹与运动审计，`artifacts.py` 负责清单和 agent 输入预览，`types.py` 放共享数据结构和参数。
 
 ## 当前限制
 
-目前 `all_meta_action_str` 仍使用 `Not Available`；纵向和横向速度由位置差分与 localization 姿态合成，并不等同于车道相对运动或换道方向。CoC 描述仍需结合图片并由人工审核，当前入口也不自动发现事件或批量处理记录。
+当前只实现纵向 meta-action。`v_lat` 是车体瞬时侧向速度，不等同于港口内的横移、斜行或变道方向，因此没有据此生成横向动作；lane 也没有使用地图规则。纵向标签来自规则阈值，可能受定位噪声和低速抖动影响。CoC 描述仍需结合图片并由人工审核，当前入口也不自动发现事件或批量处理记录。

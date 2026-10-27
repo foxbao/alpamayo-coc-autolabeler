@@ -12,34 +12,44 @@ import numpy as np
 import pytest
 import yaml
 
-import coc_labeling.local_recording.agent as local_record_agent
+import coc_labeling.recording_autolabel.agent as local_record_agent
 from coc_labeling.agents.vlm.coc_agent import VLMCoCAgent
-from coc_labeling.local_record_autolabel import (
-    LOCAL_POSITION_EGO_STATE_PROMPT,
-    PositionMotionSample,
-    ResampledPosition,
-    SelectedFrame,
-    TimedImage,
-    TimedPosition,
-    _load_temporal_config,
+from coc_labeling.local_record_autolabel import _load_temporal_config
+from coc_labeling.recording_autolabel.agent import _run_agent, build_agent_data
+from coc_labeling.recording_autolabel.camera import (
     _parse_filename_timestamp,
+    _sample_offsets,
+    select_frames,
+)
+from coc_labeling.recording_autolabel.localization import (
     _position_motion_offsets,
     _position_trajectory_offsets,
-    _run_agent,
-    _sample_offsets,
-    build_agent_data,
+    _select_motion_samples,
     build_position_motion_samples,
     derive_position_motion,
     load_localization_positions,
+    position_interval_is_continuous,
     resample_position_trajectory,
     rotate_map_velocity_to_body_flu,
     sample_orientation_at,
     sample_position_at,
     sample_recorded_linear_velocity_at,
-    select_frames,
-    write_contact_sheet_with_coc,
+)
+from coc_labeling.recording_autolabel.position_artifacts import (
     write_position_motion_audit,
     write_resampled_position_trajectory,
+)
+from coc_labeling.recording_autolabel.types import (
+    LOCAL_POSITION_EGO_STATE_PROMPT,
+    LOCAL_SCENE_CONTEXT_PROMPT,
+    PositionMotionSample,
+    ResampledPosition,
+    SelectedFrame,
+    TimedImage,
+    TimedPosition,
+)
+from coc_labeling.recording_autolabel.visualization import (
+    write_contact_sheet_with_coc,
 )
 
 
@@ -244,6 +254,63 @@ def test_sample_position_interpolates_short_gaps_and_rejects_long_gaps_and_extra
         sample_position_at(samples, Decimal("-0.001"))
 
 
+def test_position_interval_continuity_reports_gaps_and_coverage_as_booleans() -> None:
+    samples = [
+        TimedPosition(Decimal("0.0"), 0.0, 0.0, Path("0.0.json")),
+        TimedPosition(Decimal("0.01"), 1.0, 0.0, Path("0.01.json")),
+        TimedPosition(Decimal("0.1"), 2.0, 0.0, Path("0.1.json")),
+    ]
+
+    assert position_interval_is_continuous(
+        samples, Decimal("0.0"), Decimal("0.01"), Decimal("0.032")
+    )
+    assert not position_interval_is_continuous(
+        samples, Decimal("0.01"), Decimal("0.1"), Decimal("0.032")
+    )
+    assert not position_interval_is_continuous(
+        samples, Decimal("-0.01"), Decimal("0.0"), Decimal("0.032")
+    )
+
+
+def test_dense_motion_selection_preserves_values_and_checks_coarse_interval() -> None:
+    base_time = Decimal("100.0")
+    dense_samples = [
+        PositionMotionSample(
+            relative_time=Decimal(index) / 10,
+            target_timestamp=base_time + Decimal(index) / 10,
+            position_valid=True,
+            relative_x=index / 10,
+            relative_y=0.0,
+            position_error=None,
+            motion_valid=True,
+            velocity_x=2.0,
+            velocity_y=0.0,
+            ground_speed=2.0,
+            trajectory_bearing_deg=0.0,
+            motion_error=None,
+            connected_to_previous=index > 0 and index != 7,
+            body_velocity_right=0.0,
+            body_velocity_forward=2.0,
+        )
+        for index in range(11)
+    ]
+    offsets = [Decimal("0.0"), Decimal("0.5"), Decimal("1.0")]
+
+    selected = _select_motion_samples(dense_samples, offsets)
+
+    assert selected is not None
+    assert [sample.velocity_x for sample in selected] == [2.0, 2.0, 2.0]
+    assert [sample.body_velocity_forward for sample in selected] == [2.0, 2.0, 2.0]
+    assert [sample.connected_to_previous for sample in selected] == [False, True, False]
+    assert _select_motion_samples(
+        dense_samples, [Decimal("0.0"), Decimal("0.55")]
+    ) is None
+    with pytest.raises(ValueError, match="strictly increasing"):
+        _select_motion_samples(dense_samples, [Decimal("0.5"), Decimal("0.5")])
+    with pytest.raises(ValueError, match="strictly increasing"):
+        _select_motion_samples(dense_samples, [Decimal("0.5"), Decimal("0.0")])
+
+
 def test_derive_position_motion_uses_centered_position_difference() -> None:
     samples = [
         TimedPosition(
@@ -358,6 +425,45 @@ def test_motion_can_use_10hz_positions_around_a_missing_internal_grid_point() ->
     assert motion[0].position_valid
     assert motion[0].motion_valid
     assert motion[0].ground_speed == pytest.approx(5**0.5)
+
+
+def test_motion_does_not_require_a_resampled_position_at_the_center_time() -> None:
+    raw = [
+        TimedPosition(
+            timestamp=Decimal(index) / 100,
+            x=2.0 * index / 100,
+            y=0.0,
+            source_path=Path(f"{index}.json"),
+        )
+        for index in range(101)
+    ]
+    resampled = []
+    for index in range(7):
+        timestamp = Decimal("0.2") + Decimal(index) / 10
+        is_center = timestamp == Decimal("0.5")
+        resampled.append(
+            ResampledPosition(
+                relative_time=timestamp - Decimal("0.5"),
+                target_timestamp=timestamp,
+                position_valid=not is_center,
+                x=None if is_center else 2.0 * float(timestamp),
+                y=None if is_center else 0.0,
+                position_error="missing center grid point" if is_center else None,
+                connected_to_previous=index > 0 and not is_center,
+            )
+        )
+
+    motion = build_position_motion_samples(
+        raw,
+        Decimal("0.5"),
+        [Decimal("0.0")],
+        resampled_positions=resampled,
+    )[0]
+
+    assert motion.position_valid
+    assert motion.motion_valid
+    assert motion.velocity_x == pytest.approx(2.0)
+    assert motion.ground_speed == pytest.approx(2.0)
 
 
 def test_position_motion_offsets_match_coc_vector_time_grid() -> None:
@@ -516,9 +622,10 @@ def test_build_agent_data_matches_single_pass_coc_fields() -> None:
     assert len(data["all_fpv_frames_info"]) == 16
     assert data["all_meta_action_str"].count("Not Available") == 48
     assert "v_long (forward-positive): Not Available" in data["ego_text"]
+    assert data["local_scene_context_prompt"] == LOCAL_SCENE_CONTEXT_PROMPT
 
 
-def test_build_agent_data_adds_position_ground_speed_and_local_prompt() -> None:
+def test_build_agent_data_sends_body_velocity_without_ground_speed() -> None:
     selected = [
         SelectedFrame(
             relative_time=Decimal(index) / 2 - 2,
@@ -563,9 +670,10 @@ def test_build_agent_data_adds_position_ground_speed_and_local_prompt() -> None:
         position_motion=position_motion,
     )
 
-    assert data["ego_text"].count("v_ground=") == 17
     assert data["ego_text"].count("v_long=") == 17
     assert data["ego_text"].count("v_lat=") == 17
+    assert "v_ground" not in data["ego_text"]
+    assert "v_ground" not in data["ego_state_prompt"]
     assert "(t=+0.0s, v_long=Not Available, v_lat=Not Available" in data["ego_text"]
     assert "2.000 m/s" in data["ego_text"]
     assert "v_lat is right-positive" in data["ego_text"]
@@ -589,6 +697,7 @@ def test_coc_agent_uses_optional_local_ego_prompt_without_changing_default() -> 
         "all_meta_action_str": "meta values",
         "ego_text": "ground speed values",
         "ego_state_prompt": LOCAL_POSITION_EGO_STATE_PROMPT,
+        "meta_action_prompt": "local meta-action instructions",
     }
 
     messages = agent._build_input_message_with_prompt(data, prompt_module)
@@ -599,10 +708,58 @@ def test_coc_agent_uses_optional_local_ego_prompt_without_changing_default() -> 
     assert prompt_module.ego_state_prompt == "default ego prompt"
 
     default_messages = agent._build_input_message_with_prompt(
-        {key: value for key, value in data.items() if key != "ego_state_prompt"},
+        {
+            key: value
+            for key, value in data.items()
+            if key != "ego_state_prompt"
+        },
         prompt_module,
     )
     assert any(message["content"] == "default ego prompt" for message in default_messages)
+    assert any(message["content"] == "meta" for message in default_messages)
+
+
+def test_local_prompts_override_meta_action_and_append_scene_context() -> None:
+    prompt_module = SimpleNamespace(meta_action_prompt="shared meta prompt")
+    messages = [
+        {"role": "user", "m_type": "text", "content": "shared output prompt"},
+        {"role": "user", "m_type": "text", "content": "shared meta prompt"},
+    ]
+
+    result = local_record_agent._apply_local_prompt_overrides(
+        messages,
+        {
+            "meta_action_prompt": "local meta-action instructions",
+            "local_scene_context_prompt": LOCAL_SCENE_CONTEXT_PROMPT,
+        },
+        prompt_module,
+    )
+
+    assert result is messages
+    assert result[-1]["content"] == LOCAL_SCENE_CONTEXT_PROMPT
+    assert result[1]["content"] == "local meta-action instructions"
+    assert "keep lane" in LOCAL_SCENE_CONTEXT_PROMPT
+    assert "port aisle" in LOCAL_SCENE_CONTEXT_PROMPT
+
+
+def test_agent_input_preview_includes_local_scene_context(tmp_path: Path) -> None:
+    from coc_labeling.recording_autolabel.artifacts import _write_agent_input_preview
+
+    output_path = tmp_path / "agent_input_preview.json"
+    data = {
+        "clip_id": "sample_record",
+        "event_start_timestamp": 123,
+        "ego_text": "ego motion",
+        "ego_state_prompt": None,
+        "all_meta_action_str": "meta actions",
+        "meta_action_prompt": "meta prompt",
+        "local_scene_context_prompt": LOCAL_SCENE_CONTEXT_PROMPT,
+    }
+
+    _write_agent_input_preview(data, output_path)
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["local_scene_context_prompt"] == LOCAL_SCENE_CONTEXT_PROMPT
 
 
 def test_dummy_agent_writes_standard_coc_yaml(

@@ -51,12 +51,12 @@ v_ground = sqrt(v_map_x² + v_map_y²)  # 水平速度大小
 
 ## 代码中的处理
 
-`local_recording/localization.py` 执行以下步骤：
+`recording_autolabel/localization.py` 执行以下步骤：
 
 1. 将原始位置插值到 10 Hz 网格；相邻原始样本间隔超过 32 ms 时保留缺失点。
 2. 对 10 Hz map-XY 位置作 0.5 秒中心差分，得到 map-XY 平面速度和地速大小。
 3. 在同一时刻对姿态四元数作 SLERP，并用逆旋转得到车体 FLU 分量。
-4. 把 `body_x` 作为 `v_long`，把 `-body_y` 作为右正 `v_lat`，连同 `v_ground` 输入 Agent。
+4. 把 `body_x` 作为 `v_long`，把 `-body_y` 作为右正 `v_lat` 输入 Agent；`v_ground` 只保存在审计产物中，不发给 Agent。
 5. 在 `position_motion_audit.json` 中保存使用的坐标解释、地图速度、姿态、推导的 FLU 分量、原始 `linear_velocity`（强支持车体 FLU 的工作假设）和一致性残差。
 
 FLU 是这四条记录上的数据驱动判断，不是 localization JSON 自带的契约。如果将来输入来自不同车辆、相机安装方向变化或定位生产链路变化，应先重新做同类核对，再使用这些车体分量。旧的 RFU 版本审计 JSON 也需要重新运行生成，不能与新字段语义混用。

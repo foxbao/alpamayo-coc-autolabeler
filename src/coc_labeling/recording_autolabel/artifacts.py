@@ -18,12 +18,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Any
 
-from .camera import _event_timestamp, _timestamp_micros
+from .camera import event_timestamp, timestamp_micros
 from .types import SelectedFrame
 
 
@@ -32,6 +32,8 @@ def _write_frame_manifest(
     record_id: str,
     event_time_sec: Decimal,
     selected: Sequence[SelectedFrame],
+    *,
+    extra_fields: Mapping[str, Any] | None = None,
 ) -> None:
     """将选帧来源、目标时刻和实际误差写入 JSON 清单。
 
@@ -43,7 +45,7 @@ def _write_frame_manifest(
         "record_id": record_id,
         "time_origin": "first_front_camera_filename_timestamp",
         "event_time_sec": float(event_time_sec),
-        "event_start_timestamp": _timestamp_micros(_event_timestamp(selected)),
+        "event_start_timestamp": timestamp_micros(event_timestamp(selected)),
         "event_start_frame": int(
             (event_time_sec * Decimal(10)).to_integral_value(rounding=ROUND_FLOOR)
         ),
@@ -59,6 +61,8 @@ def _write_frame_manifest(
             for frame in selected
         ],
     }
+    if extra_fields:
+        payload.update(extra_fields)
     manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -70,6 +74,8 @@ def _write_agent_input_preview(data: dict[str, Any], output_path: Path) -> Path:
         "ego_text": data["ego_text"],
         "ego_state_prompt": data.get("ego_state_prompt"),
         "all_meta_action_str": data["all_meta_action_str"],
+        "meta_action_prompt": data.get("meta_action_prompt"),
+        "local_scene_context_prompt": data.get("local_scene_context_prompt"),
     }
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return output_path

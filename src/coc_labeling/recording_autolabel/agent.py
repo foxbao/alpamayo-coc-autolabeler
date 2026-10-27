@@ -29,14 +29,21 @@ import yaml
 
 from coc_labeling.data_loader.video_loader import FrameIdentifier
 
-from .camera import _event_timestamp, _timestamp_micros
-from .types import LOCAL_POSITION_EGO_STATE_PROMPT, PositionMotionSample, SelectedFrame
+from .actions import LongitudinalActionResult, format_local_meta_action_text
+from .camera import event_timestamp, timestamp_micros
+from .types import (
+    LOCAL_META_ACTION_PROMPT,
+    LOCAL_POSITION_EGO_STATE_PROMPT,
+    LOCAL_SCENE_CONTEXT_PROMPT,
+    PositionMotionSample,
+    SelectedFrame,
+)
 
 
-def _format_position_ground_speed(samples: Sequence[PositionMotionSample]) -> str:
-    """将地面速度和车体坐标速度格式化成 CoC 可读的时序文本。"""
+def _format_position_velocity(samples: Sequence[PositionMotionSample]) -> str:
+    """将车体前向和右向速度格式化成 CoC 可读的时序文本。"""
     if not samples:
-        raise ValueError("Ground-speed text requires at least one position-motion sample")
+        raise ValueError("Position-velocity text requires at least one motion sample")
     pairs = []
     for sample in samples:
         v_long = (
@@ -49,24 +56,40 @@ def _format_position_ground_speed(samples: Sequence[PositionMotionSample]) -> st
             if sample.body_velocity_right is not None
             else "Not Available"
         )
-        v_ground = (
-            f"{sample.ground_speed:.3f} m/s"
-            if sample.motion_valid and sample.ground_speed is not None
-            else "Not Available"
-        )
         pairs.append(
-            f"(t={sample.relative_time:+.1f}s, v_long={v_long}, "
-            f"v_lat={v_lat}, v_ground={v_ground})"
+            f"(t={sample.relative_time:+.1f}s, v_long={v_long}, v_lat={v_lat})"
         )
     return (
-        "Position-derived ego velocity time series (relative to event time t=0.0s):\n"
-        "- Body-frame v_long is forward-positive and v_lat is right-positive; "
-        "v_ground is horizontal speed magnitude: ["
+        "Position-derived body-frame ego velocity time series "
+        "(relative to event time t=0.0s):\n"
+        "- v_long is forward-positive and v_lat is right-positive: ["
         + ", ".join(pairs)
         + "]\n"
-        "Missing values are not interpolated. Body-frame components require a valid "
-        "localization orientation; ground speed only requires position."
+        "Missing values are not interpolated. Body-frame components require valid position "
+        "differences and localization orientation."
     )
+
+
+def _apply_local_prompt_overrides(
+    messages: list[dict[str, Any]], data: dict[str, Any], prompt_module: Any
+) -> list[dict[str, Any]]:
+    """仅在本地适配层覆盖动作说明，并追加场景语义。"""
+    meta_action_prompt = data.get("meta_action_prompt")
+    if meta_action_prompt:
+        for message in messages:
+            if (
+                message.get("role") == "user"
+                and message.get("m_type") == "text"
+                and message.get("content") == prompt_module.meta_action_prompt
+            ):
+                message["content"] = meta_action_prompt
+                break
+
+    scene_context = data.get("local_scene_context_prompt")
+    if scene_context:
+        messages.append({"role": "user", "m_type": "text", "content": scene_context})
+    return messages
+
 
 def build_agent_data(
     record_id: str,
@@ -74,11 +97,13 @@ def build_agent_data(
     selected: Sequence[SelectedFrame],
     frames: Sequence[np.ndarray],
     position_motion: Sequence[PositionMotionSample] | None = None,
+    longitudinal_actions: LongitudinalActionResult | None = None,
 ) -> dict[str, Any]:
     """组装 ``VLMCoCAgent`` 所需的最小输入字典。
 
-    默认 16 帧会拆成 4 张历史帧和 12 张未来帧；动作仍填为 ``Not Available``。
-    如果提供位置差分结果，``ego_text`` 包含地面速度以及车体前向、右向速度分量。
+    默认 16 帧会拆成 4 张历史帧和 12 张未来帧；港口只提供纵向动作，
+    lateral/lane 保持 ``Not Available``。如果提供位置差分结果，``ego_text``
+    只包含车体前向、右向速度分量。
     """
     if len(selected) != len(frames) or len(selected) < 2:
         raise ValueError("Selected-frame metadata and image arrays must have equal non-zero length")
@@ -97,21 +122,16 @@ def build_agent_data(
         if not any(sample.relative_time == 0 for sample in position_motion):
             raise ValueError("Position-derived ego motion samples must include event time t=0.0s")
 
-    # meta-action 仍不可用。定位推导的车辆运动信息单独加入 ego_text。
-    meta_action_lines = [
-        "Meta-actions by sampled timestamp (relative to event, unit: seconds):"
-    ]
-    meta_action_lines.extend(
-        f"(t={frame.relative_time:+.1f}s) longitudinal: Not Available, "
-        "lateral: Not Available, lane: Not Available"
-        for frame in selected
+    # 用 10 Hz 规则结果给每张 2 Hz 图片配一个纵向先验；横向和 lane 仍不可用。
+    meta_action_text = format_local_meta_action_text(
+        [frame.relative_time for frame in selected], longitudinal_actions
     )
-    event_timestamp = _timestamp_micros(_event_timestamp(selected))
+    event_timestamp_us = timestamp_micros(event_timestamp(selected))
     all_frame_info = [
         FrameIdentifier(
             video_filename=frame.image.path.name,
             index_in_video=0,
-            timestamp_micros=_timestamp_micros(frame.image.timestamp),
+            timestamp_micros=timestamp_micros(frame.image.timestamp),
         )
         for frame in selected
     ]
@@ -120,15 +140,14 @@ def build_agent_data(
             "Ego velocity time series (relative to event time t=0.0s):\n"
             "- v_long (forward-positive): Not Available\n"
             "- v_lat (right-positive): Not Available\n"
-            "- v_ground (horizontal speed magnitude): Not Available\n"
             "Motion state is unavailable for this image-input smoke test."
         )
     else:
-        ego_text = _format_position_ground_speed(position_motion)
+        ego_text = _format_position_velocity(position_motion)
 
     return {
         "clip_id": record_id,
-        "event_start_timestamp": event_timestamp,
+        "event_start_timestamp": event_timestamp_us,
         # agent 的数据格式还要求提供 10 Hz 帧索引。上面的绝对相机时间戳
         # 才是精确事件时刻；这里提供的是向下取整得到的帧索引。
         "event_start_frame": int(
@@ -137,13 +156,19 @@ def build_agent_data(
         "hist_fpv_frames": list(frames[:history_frames]),
         "fut_fpv_frames": list(frames[history_frames:]),
         "all_fpv_frames_info": all_frame_info,
-        "all_meta_action_str": "\n" + "\n".join(meta_action_lines),
+        "all_meta_action_str": "\n" + meta_action_text,
         "ego_text": ego_text,
+        **(
+            {"meta_action_prompt": LOCAL_META_ACTION_PROMPT}
+            if longitudinal_actions is not None
+            else {}
+        ),
         **(
             {"ego_state_prompt": LOCAL_POSITION_EGO_STATE_PROMPT}
             if position_motion is not None
             else {}
         ),
+        "local_scene_context_prompt": LOCAL_SCENE_CONTEXT_PROMPT,
     }
 
 def _configure_openai_environment(api_config_path: Path) -> None:
@@ -191,7 +216,16 @@ def _run_agent(
     预期结果路径是 ``<labels_dir>/my_record/cot_123456.yaml``。
     """
     _configure_openai_environment(api_config_path)
-    from coc_labeling.agents.vlm.factory import VLMFactory
+    from coc_labeling.agents.vlm.coc_agent import VLMCoCAgent
+
+    class LocalPortVLMCoCAgent(VLMCoCAgent):
+        """只为本地港口数据在共享 CoC 提示后追加场景上下文。"""
+
+        def _build_input_message_with_prompt(
+            self, data: dict[str, Any], prompt_module: Any
+        ) -> list[dict[str, Any]]:
+            messages = super()._build_input_message_with_prompt(data, prompt_module)
+            return _apply_local_prompt_overrides(messages, data, prompt_module)
 
     agent_config = SimpleNamespace(
         agent_name="VLMCoCAgent",
@@ -200,9 +234,9 @@ def _run_agent(
         repetition_penalty=1.0,
         use_metaaction_check_pipeline=False,
     )
-    agent = VLMFactory(
-        model_name=model_name,
-        agent_config=agent_config,
+    agent = LocalPortVLMCoCAgent(
+        model_name,
+        agent_config,
         vector_config=None,
         data_loader_config=data_loader_config,
         timeout_sec=timeout_sec,

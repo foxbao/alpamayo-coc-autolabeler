@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import bisect
 from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
@@ -43,6 +44,7 @@ def _parse_filename_timestamp(path: Path) -> Decimal:
         raise ValueError(f"Camera image timestamp must be finite: {path.name}")
     return timestamp
 
+
 def _parse_event_time(value: str) -> Decimal:
     """解析非负事件时间，并在命令行参数无效时给出明确错误。
 
@@ -55,6 +57,7 @@ def _parse_event_time(value: str) -> Decimal:
     if not event_time.is_finite() or event_time < 0:
         raise argparse.ArgumentTypeError("event time must be finite and non-negative")
     return event_time
+
 
 def load_timed_images(camera_dir: Path) -> list[TimedImage]:
     """读取 front 相机目录中的 JPEG，并按文件名时间戳排序。
@@ -71,6 +74,7 @@ def load_timed_images(camera_dir: Path) -> list[TimedImage]:
     # 使用 Decimal 保留图片文件名中亚毫秒级的时间精度。
     images = [TimedImage(path=path, timestamp=_parse_filename_timestamp(path)) for path in paths]
     return sorted(images, key=lambda image: (image.timestamp, image.path.name))
+
 
 def _sample_offsets(
     history_sec: Decimal, future_sec: Decimal, interval_sec: Decimal
@@ -91,11 +95,10 @@ def _sample_offsets(
 
     # 历史帧止于 t=0 之前；未来帧从 t=0 开始，因此事件帧只出现一次。
     # 默认配置会生成 4 张历史帧和 12 张未来帧。
-    offsets = [
-        -history_sec + interval_sec * index for index in range(int(history_count))
-    ]
+    offsets = [-history_sec + interval_sec * index for index in range(int(history_count))]
     offsets.extend(interval_sec * index for index in range(int(future_count)))
     return offsets
+
 
 def select_frames(
     images: Sequence[TimedImage],
@@ -127,9 +130,7 @@ def select_frames(
         target = camera_start + event_time_sec + offset
         insertion_index = bisect.bisect_left(timestamps, target)
         candidate_indices = [
-            index
-            for index in (insertion_index - 1, insertion_index)
-            if 0 <= index < len(images)
+            index for index in (insertion_index - 1, insertion_index) if 0 <= index < len(images)
         ]
         image = min(
             (images[index] for index in candidate_indices),
@@ -146,9 +147,7 @@ def select_frames(
                 f"nearest is {image.path.name} ({error_sec * 1000:.3f} ms away)"
             )
         if image.path in used_paths:
-            raise ValueError(
-                f"Camera image would be reused at t={offset:+.1f}s: {image.path.name}"
-            )
+            raise ValueError(f"Camera image would be reused at t={offset:+.1f}s: {image.path.name}")
         used_paths.add(image.path)
         selected.append(
             SelectedFrame(
@@ -160,14 +159,16 @@ def select_frames(
         )
     return selected
 
-def _timestamp_micros(timestamp_sec: Decimal) -> int:
+
+def timestamp_micros(timestamp_sec: Decimal) -> int:
     """将 Decimal 类型的 Unix 秒时间戳四舍五入为整数微秒。
 
     例如，1000.25 秒会变成 1,000,250,000 微秒。
     """
     return int((timestamp_sec * Decimal(1_000_000)).to_integral_value(rounding=ROUND_HALF_UP))
 
-def _event_timestamp(selected: Sequence[SelectedFrame]) -> Decimal:
+
+def event_timestamp(selected: Sequence[SelectedFrame]) -> Decimal:
     """从相对时刻 t=0 的目标时间取得事件的绝对相机时间戳。
 
     选帧里同时有 -0.5、0、+0.5 秒时，返回中间那帧的目标绝对时间。
@@ -176,6 +177,7 @@ def _event_timestamp(selected: Sequence[SelectedFrame]) -> Decimal:
         if frame.relative_time == 0:
             return frame.target_timestamp
     raise ValueError("Selected CoC timestamps must include the event time t=0.0s")
+
 
 def _load_rgb_frames(selected: Sequence[SelectedFrame]) -> list[np.ndarray]:
     """用 OpenCV 将选中的 JPEG 读成现有 VLM 封装所需的 BGR 数组。
@@ -190,3 +192,47 @@ def _load_rgb_frames(selected: Sequence[SelectedFrame]) -> list[np.ndarray]:
             raise ValueError(f"Could not decode camera image: {item.image.path}")
         frames.append(frame)
     return frames
+
+
+@dataclass(frozen=True)
+class LoadedImages:
+    """相机图片 Loader 选出的帧、解码结果和事件时间。"""
+
+    selected_frames: list[SelectedFrame]
+    decoded_frames: list[np.ndarray]
+    event_timestamp: Decimal
+
+
+class ImgLoader:
+    """按 CoC 时间窗口读取时间戳图片，并返回可直接使用的图像帧。"""
+
+    def __init__(
+        self,
+        history_sec: Decimal,
+        future_sec: Decimal,
+        interval_sec: Decimal,
+    ) -> None:
+        self.history_sec = history_sec
+        self.future_sec = future_sec
+        self.interval_sec = interval_sec
+
+    def load(self, camera_dir: Path, event_time_sec: Decimal) -> LoadedImages:
+        """读取相机目录、匹配 CoC 时刻的图片并解码。"""
+        images = load_timed_images(camera_dir)
+        return self.load_from_images(images, event_time_sec)
+
+    def load_from_images(
+        self, images: Sequence[TimedImage], event_time_sec: Decimal
+    ) -> LoadedImages:
+        """复用已读取的图片时间表，为一个事件匹配并解码 CoC 帧。"""
+        selected_frames = select_frames(
+            images,
+            event_time_sec,
+            _sample_offsets(self.history_sec, self.future_sec, self.interval_sec),
+        )
+        decoded_frames = _load_rgb_frames(selected_frames)
+        return LoadedImages(
+            selected_frames=selected_frames,
+            decoded_frames=decoded_frames,
+            event_timestamp=event_timestamp(selected_frames),
+        )

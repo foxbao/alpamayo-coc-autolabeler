@@ -20,9 +20,12 @@ from __future__ import annotations
 import bisect
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 from .types import (
     LOCALIZATION_RESAMPLE_INTERVAL_SEC,
@@ -32,6 +35,9 @@ from .types import (
     ResampledPosition,
     TimedPosition,
 )
+
+_BracketSample = TypeVar("_BracketSample")
+_SampleResult = TypeVar("_SampleResult")
 
 
 def load_localization_positions(localization_dir: Path) -> list[TimedPosition]:
@@ -165,33 +171,35 @@ def _read_optional_linear_velocity(
 
 
 def _sample_bracket(
-    samples: Sequence[TimedPosition],
+    samples: Sequence[_BracketSample],
     timestamp: Decimal,
     *,
     max_gap_sec: Decimal,
-) -> tuple[TimedPosition, TimedPosition, float]:
+    get_timestamp: Callable[[_BracketSample], Decimal],
+) -> tuple[_BracketSample, _BracketSample, float]:
     """返回目标时刻两侧样本和插值比例；不外推，也不跨越长采样间隔。"""
     if not samples:
         raise ValueError("No localization samples are available")
-    timestamps = [sample.timestamp for sample in samples]
+    timestamps = [get_timestamp(sample) for sample in samples]
     index = bisect.bisect_left(timestamps, timestamp)
-    if index < len(samples) and samples[index].timestamp == timestamp:
+    if index < len(samples) and timestamps[index] == timestamp:
         sample = samples[index]
         return sample, sample, 0.0
     if index == 0 or index == len(samples):
         raise ValueError(
             f"Target timestamp {timestamp} is outside localization coverage "
-            f"[{samples[0].timestamp}, {samples[-1].timestamp}]"
+            f"[{timestamps[0]}, {timestamps[-1]}]"
         )
 
     left, right = samples[index - 1], samples[index]
-    gap = right.timestamp - left.timestamp
+    left_timestamp, right_timestamp = timestamps[index - 1], timestamps[index]
+    gap = right_timestamp - left_timestamp
     if gap > max_gap_sec:
         raise ValueError(
             f"Localization sampling gap {gap * 1000} ms exceeds "
-            f"{max_gap_sec * 1000} ms between {left.timestamp} and {right.timestamp}"
+            f"{max_gap_sec * 1000} ms between {left_timestamp} and {right_timestamp}"
         )
-    fraction = float((timestamp - left.timestamp) / gap)
+    fraction = float((timestamp - left_timestamp) / gap)
     return left, right, fraction
 
 
@@ -234,7 +242,10 @@ def sample_orientation_at(
 ) -> tuple[float, float, float, float]:
     """读取或 SLERP 插值车体 FLU 到 map-XY 的姿态四元数。"""
     left, right, fraction = _sample_bracket(
-        samples, timestamp, max_gap_sec=max_gap_sec
+        samples,
+        timestamp,
+        max_gap_sec=max_gap_sec,
+        get_timestamp=lambda sample: sample.timestamp,
     )
     if left.orientation_wxyz is None or right.orientation_wxyz is None:
         raise ValueError(f"Localization orientation is unavailable at {timestamp}")
@@ -251,7 +262,10 @@ def sample_recorded_linear_velocity_at(
 ) -> tuple[float, float, float]:
     """插值原始速度供审计；工作假设为车体 FLU，尚无生产端坐标契约。"""
     left, right, fraction = _sample_bracket(
-        samples, timestamp, max_gap_sec=max_gap_sec
+        samples,
+        timestamp,
+        max_gap_sec=max_gap_sec,
+        get_timestamp=lambda sample: sample.timestamp,
     )
     if left.linear_velocity_xyz is None or right.linear_velocity_xyz is None:
         raise ValueError(f"Localization linear_velocity is unavailable at {timestamp}")
@@ -285,20 +299,21 @@ def rotate_map_velocity_to_body_flu(
         vz + qw * tz + (qx * ty - qy * tx),
     )
 
-def _ensure_continuous_position_interval(
+def position_interval_is_continuous(
     samples: Sequence[TimedPosition],
     start_timestamp: Decimal,
     end_timestamp: Decimal,
     max_gap_sec: Decimal,
-) -> None:
-    """拒绝覆盖范围外的区间，或区间内部跨越过大的定位采样缺口。"""
+) -> bool:
+    """判断区间是否有完整定位覆盖，且没有超过阈值的样本间隔。"""
     if not samples:
-        raise ValueError("No localization positions are available")
-    if start_timestamp < samples[0].timestamp or end_timestamp > samples[-1].timestamp:
-        raise ValueError(
-            f"Requested position window [{start_timestamp}, {end_timestamp}] is outside "
-            f"localization coverage [{samples[0].timestamp}, {samples[-1].timestamp}]"
-        )
+        return False
+    if (
+        start_timestamp > end_timestamp
+        or start_timestamp < samples[0].timestamp
+        or end_timestamp > samples[-1].timestamp
+    ):
+        return False
 
     timestamps = [sample.timestamp for sample in samples]
     start_index = max(0, bisect.bisect_right(timestamps, start_timestamp) - 1)
@@ -311,10 +326,42 @@ def _ensure_continuous_position_interval(
             continue
         gap = right - left
         if gap > max_gap_sec:
-            raise ValueError(
-                f"Localization sampling gap {gap * 1000} ms exceeds "
-                f"{max_gap_sec * 1000} ms between {left} and {right}"
-            )
+            return False
+    return True
+
+
+def _select_motion_samples(
+    dense_samples: Sequence[PositionMotionSample],
+    offsets: Sequence[Decimal],
+) -> list[PositionMotionSample] | None:
+    """从密集运动序列抽取目标时刻，并保留目标间隔的连续性语义。
+
+    若 CoC 采样时刻不在 10 Hz 网格上，返回 ``None``，由调用方单独计算。
+    ``connected_to_previous`` 汇总两个抽取时刻之间所有密集网格段的状态，
+    因此仍表示整个 CoC 间隔（例如 0.5 秒）是否连续。
+    """
+    if any(later <= earlier for earlier, later in zip(offsets, offsets[1:])):
+        raise ValueError("Motion sample offsets must be strictly increasing")
+
+    samples_by_time = {
+        sample.relative_time: (index, sample)
+        for index, sample in enumerate(dense_samples)
+    }
+    if any(offset not in samples_by_time for offset in offsets):
+        return None
+
+    selected: list[PositionMotionSample] = []
+    previous_index: int | None = None
+    for offset in offsets:
+        index, sample = samples_by_time[offset]
+        connected = previous_index is not None and all(
+            dense_samples[step].connected_to_previous
+            for step in range(previous_index + 1, index + 1)
+        )
+        selected.append(replace(sample, connected_to_previous=connected))
+        previous_index = index
+    return selected
+
 
 def sample_position_at(
     samples: Sequence[TimedPosition],
@@ -327,31 +374,69 @@ def sample_position_at(
     例如，目标时刻处于相距 10 ms 的两个定位样本之间时会线性插值；
     若两样本相距 424 ms，则返回错误，不跨过记录开头的长间隔。
     """
-    if not samples:
-        raise ValueError("No localization positions are available")
-    timestamps = [sample.timestamp for sample in samples]
-    index = bisect.bisect_left(timestamps, timestamp)
-    if index < len(samples) and samples[index].timestamp == timestamp:
-        sample = samples[index]
-        return sample.x, sample.y
-    if index == 0 or index == len(samples):
-        raise ValueError(
-            f"Target timestamp {timestamp} is outside localization coverage "
-            f"[{samples[0].timestamp}, {samples[-1].timestamp}]"
-        )
-
-    left, right = samples[index - 1], samples[index]
-    gap = right.timestamp - left.timestamp
-    if gap > max_gap_sec:
-        raise ValueError(
-            f"Localization sampling gap {gap * 1000} ms exceeds "
-            f"{max_gap_sec * 1000} ms between {left.timestamp} and {right.timestamp}"
-        )
-    fraction = float((timestamp - left.timestamp) / gap)
+    left, right, fraction = _sample_bracket(
+        samples,
+        timestamp,
+        max_gap_sec=max_gap_sec,
+        get_timestamp=lambda sample: sample.timestamp,
+    )
     return (
         left.x + fraction * (right.x - left.x),
         left.y + fraction * (right.y - left.y),
     )
+
+
+def _sample_resampled_position_at(
+    valid_samples: Sequence[ResampledPosition],
+    timestamp: Decimal,
+    *,
+    max_gap_sec: Decimal,
+) -> tuple[float, float]:
+    """在有效的重采样位置间插值，不跨越缺失网格点。"""
+    left, right, fraction = _sample_bracket(
+        valid_samples,
+        timestamp,
+        max_gap_sec=max_gap_sec,
+        get_timestamp=lambda sample: sample.target_timestamp,
+    )
+    # valid_samples 已筛掉没有坐标的点。
+    assert left.x is not None and left.y is not None
+    assert right.x is not None and right.y is not None
+    return (
+        left.x + fraction * (right.x - left.x),
+        left.y + fraction * (right.y - left.y),
+    )
+
+
+def _optional_sample(
+    sample: Callable[[], _SampleResult],
+) -> tuple[_SampleResult | None, str | None]:
+    """将一次可选采样统一转换为“结果或错误信息”。"""
+    try:
+        return sample(), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _derive_velocity(
+    sample_position: Callable[[Decimal], tuple[float, float]],
+    timestamp: Decimal,
+    *,
+    window_sec: Decimal,
+) -> tuple[float, float, float, float]:
+    """只从中心差分两端估算 map-XY 速度、速度大小和方向。"""
+    if window_sec <= 0:
+        raise ValueError("Position derivative window must be positive")
+    half_window = window_sec / 2
+    before_x, before_y = sample_position(timestamp - half_window)
+    after_x, after_y = sample_position(timestamp + half_window)
+    duration = float(window_sec)
+    velocity_x = (after_x - before_x) / duration
+    velocity_y = (after_y - before_y) / duration
+    ground_speed = math.hypot(velocity_x, velocity_y)
+    trajectory_bearing_deg = math.degrees(math.atan2(velocity_y, velocity_x))
+    return velocity_x, velocity_y, ground_speed, trajectory_bearing_deg
+
 
 def derive_position_motion(
     samples: Sequence[TimedPosition],
@@ -369,23 +454,16 @@ def derive_position_motion(
     """
     if window_sec <= 0:
         raise ValueError("Position derivative window must be positive")
-    half_window = window_sec / 2
-    start_timestamp = timestamp - half_window
-    end_timestamp = timestamp + half_window
     position_x, position_y = sample_position_at(
         samples, timestamp, max_gap_sec=max_gap_sec
     )
-    before_x, before_y = sample_position_at(
-        samples, start_timestamp, max_gap_sec=max_gap_sec
+    velocity_x, velocity_y, ground_speed, trajectory_bearing_deg = _derive_velocity(
+        lambda target: sample_position_at(
+            samples, target, max_gap_sec=max_gap_sec
+        ),
+        timestamp,
+        window_sec=window_sec,
     )
-    after_x, after_y = sample_position_at(
-        samples, end_timestamp, max_gap_sec=max_gap_sec
-    )
-    duration = float(window_sec)
-    velocity_x = (after_x - before_x) / duration
-    velocity_y = (after_y - before_y) / duration
-    ground_speed = math.hypot(velocity_x, velocity_y)
-    trajectory_bearing_deg = math.degrees(math.atan2(velocity_y, velocity_x))
     return (
         position_x,
         position_y,
@@ -394,6 +472,7 @@ def derive_position_motion(
         ground_speed,
         trajectory_bearing_deg,
     )
+
 
 def _position_trajectory_offsets(
     history_sec: Decimal,
@@ -463,16 +542,12 @@ def resample_position_trajectory(
             and previous_valid_sample is not None
             and previous_valid_sample.position_valid
         ):
-            try:
-                _ensure_continuous_position_interval(
-                    samples,
-                    previous_valid_sample.target_timestamp,
-                    target_timestamp,
-                    max_raw_gap_sec,
-                )
-                connected_to_previous = True
-            except ValueError:
-                connected_to_previous = False
+            connected_to_previous = position_interval_is_continuous(
+                samples,
+                previous_valid_sample.target_timestamp,
+                target_timestamp,
+                max_raw_gap_sec,
+            )
 
         item = ResampledPosition(
             relative_time=offset,
@@ -518,43 +593,43 @@ def build_position_motion_samples(
     地图 XY 速度由 10 Hz 位置网格估计，再用定位姿态逆旋转成车体 FLU。
     缺失的 10 Hz 网格点会形成超过 0.1 秒的间隔，速度插值不会跨过这些缺口。
     """
-    motion_positions: Sequence[TimedPosition] = samples
-    motion_max_gap_sec = max_gap_sec
-    if resampled_positions is not None:
-        motion_positions = [
-            TimedPosition(
-                timestamp=sample.target_timestamp,
-                x=sample.x,
-                y=sample.y,
-                source_path=Path("resampled_10hz.json"),
-            )
+    if resampled_positions is None:
+        motion_position_at = lambda timestamp: sample_position_at(
+            samples, timestamp, max_gap_sec=max_gap_sec
+        )
+    else:
+        valid_motion_positions = [
+            sample
             for sample in resampled_positions
             if sample.position_valid and sample.x is not None and sample.y is not None
         ]
-        motion_max_gap_sec = LOCALIZATION_RESAMPLE_INTERVAL_SEC
-
-    try:
-        event_x, event_y = sample_position_at(
-            samples, event_timestamp, max_gap_sec=max_gap_sec
+        motion_position_at = lambda timestamp: _sample_resampled_position_at(
+            valid_motion_positions,
+            timestamp,
+            max_gap_sec=LOCALIZATION_RESAMPLE_INTERVAL_SEC,
         )
-        event_position_error = None
-    except ValueError as exc:
-        event_x = event_y = None
-        event_position_error = str(exc)
+
+    event_position, event_position_error = _optional_sample(
+        lambda: sample_position_at(samples, event_timestamp, max_gap_sec=max_gap_sec)
+    )
+    event_x, event_y = (
+        event_position if event_position is not None else (None, None)
+    )
 
     result: list[PositionMotionSample] = []
     previous_timestamp: Decimal | None = None
     previous_position_valid = False
     for offset in offsets:
         target_timestamp = event_timestamp + offset
-        try:
-            position_x, position_y = sample_position_at(
-                samples, target_timestamp, max_gap_sec=max_gap_sec
+        position, position_error = _optional_sample(
+            partial(
+                sample_position_at,
+                samples,
+                target_timestamp,
+                max_gap_sec=max_gap_sec,
             )
-            position_error = None
-        except ValueError as exc:
-            position_x = position_y = None
-            position_error = str(exc)
+        )
+        position_x, position_y = position if position is not None else (None, None)
 
         relative_x = (
             position_x - event_x
@@ -569,24 +644,18 @@ def build_position_motion_samples(
         if event_position_error and position_error is None:
             position_error = f"Event position is unavailable: {event_position_error}"
 
-        try:
-            (
-                _center_x,
-                _center_y,
-                velocity_x,
-                velocity_y,
-                ground_speed,
-                trajectory_bearing_deg,
-            ) = derive_position_motion(
-                motion_positions,
+        velocity, motion_error = _optional_sample(
+            partial(
+                _derive_velocity,
+                motion_position_at,
                 target_timestamp,
                 window_sec=window_sec,
-                max_gap_sec=motion_max_gap_sec,
             )
-            motion_error = None
-        except ValueError as exc:
+        )
+        if velocity is None:
             velocity_x = velocity_y = ground_speed = trajectory_bearing_deg = None
-            motion_error = str(exc)
+        else:
+            velocity_x, velocity_y, ground_speed, trajectory_bearing_deg = velocity
 
         orientation_wxyz: tuple[float, float, float, float] | None = None
         body_velocity_right: float | None = None
@@ -594,20 +663,24 @@ def build_position_motion_samples(
         body_motion_error: str | None = None
         recorded_linear_velocity_xyz: tuple[float, float, float] | None = None
         body_velocity_residual_mps: float | None = None
-        try:
-            orientation_wxyz = sample_orientation_at(
-                samples, target_timestamp, max_gap_sec=max_gap_sec
+        orientation_wxyz, body_motion_error = _optional_sample(
+            partial(
+                sample_orientation_at,
+                samples,
+                target_timestamp,
+                max_gap_sec=max_gap_sec,
             )
-        except ValueError as exc:
-            body_motion_error = str(exc)
+        )
 
-        try:
-            recorded_linear_velocity_xyz = sample_recorded_linear_velocity_at(
-                samples, target_timestamp, max_gap_sec=max_gap_sec
+        # 原始速度仅用于残差审计；采样失败不影响位置差分速度。
+        recorded_linear_velocity_xyz, _ = _optional_sample(
+            partial(
+                sample_recorded_linear_velocity_at,
+                samples,
+                target_timestamp,
+                max_gap_sec=max_gap_sec,
             )
-        except ValueError:
-            # 该字段只用于审计；缺失或无法插值时不影响位置差分速度。
-            pass
+        )
 
         if velocity_x is None or velocity_y is None:
             body_motion_error = (
@@ -633,13 +706,9 @@ def build_position_motion_samples(
             and previous_position_valid
             and position_x is not None
         ):
-            try:
-                _ensure_continuous_position_interval(
-                    samples, previous_timestamp, target_timestamp, max_gap_sec
-                )
-                connected_to_previous = True
-            except ValueError:
-                connected_to_previous = False
+            connected_to_previous = position_interval_is_continuous(
+                samples, previous_timestamp, target_timestamp, max_gap_sec
+            )
 
         result.append(
             PositionMotionSample(
