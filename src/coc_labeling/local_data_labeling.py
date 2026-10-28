@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .data_loader.sample_dataset import DATASET_ROOTS, SampleDataset, SampleRecord
 from .recording_autolabel.localization import load_localization_positions
 from .recording_autolabel.meta_action_artifacts import write_full_record_meta_action
 from .recording_autolabel.scenario import LocalTemporalScenario
@@ -21,14 +22,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input-root",
         type=Path,
-        required=True,
-        help="Root directory containing local recording folders.",
+        help="Root containing record directories; use this or --dataset.",
     )
+    parser.add_argument("--dataset", choices=sorted(DATASET_ROOTS))
+    parser.add_argument("--dataset-root", type=Path)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
         "--record",
         nargs="+",
-        help="record directory names; omit to process localization directories under input-root",
+        help="record names under --input-root, or qualified <batch>/<record> IDs with --dataset",
     )
     return parser
 
@@ -73,8 +75,48 @@ def process_clip(input_root: Path, output_root: Path, record_id: str) -> Path:
     return output_path
 
 
+def process_sample_record(output_root: Path, record: SampleRecord) -> Path:
+    """Generate meta-actions from a record discovered by ``SampleDataset``."""
+    positions = record.load_localization()
+    scenario = LocalTemporalScenario(record.record_id, positions)
+    result = scenario.longitudinal_action_result
+    output_path = write_full_record_meta_action(
+        result,
+        output_root / record.qualified_id / "full_record_meta_action.json",
+        record.record_id,
+        scenario.localization_start,
+    )
+    print(
+        f"{record.qualified_id}: {len(result.points)} action ticks, "
+        f"{len(result.spans)} action spans"
+    )
+    print(f"  Meta-action: {output_path}")
+    return output_path
+
+
 def main() -> None:
     args = _parser().parse_args()
+    if bool(args.dataset) == bool(args.input_root):
+        raise SystemExit("Specify exactly one of --dataset or --input-root")
+    if args.dataset:
+        dataset = SampleDataset(args.dataset, args.dataset_root)
+        records = dataset.discover_records()
+        if args.record:
+            if len(args.record) != len(set(args.record)):
+                raise SystemExit("--record must not contain duplicate qualified IDs")
+            requested = set(args.record)
+            available = {record.qualified_id for record in records}
+            missing = sorted(requested - available)
+            if missing:
+                raise SystemExit(f"Records not found in {args.dataset}: {', '.join(missing)}")
+            records = [record for record in records if record.qualified_id in requested]
+        if not records:
+            raise SystemExit(f"No records found in dataset {args.dataset}")
+        for record in records:
+            process_sample_record(args.output_dir, record)
+        return
+    if args.dataset_root:
+        raise SystemExit("--dataset-root requires --dataset")
     records = _discover_records(args.input_root, args.record)
     if not records:
         raise SystemExit(f"No localization record directories found in {args.input_root}")

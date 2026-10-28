@@ -37,6 +37,11 @@ def test_candidate_writer_removes_stale_generated_contact_sheets(
     current_sheet.write_bytes(b"old image")
     stale_sheet.write_bytes(b"stale image")
     unrelated_file.write_text("keep", encoding="utf-8")
+    previews_dir = record_output / "previews"
+    previews_dir.mkdir()
+    (previews_dir / "candidate_001.mp4").write_bytes(b"old preview")
+    (previews_dir / "candidate_002.mp4").write_bytes(b"stale preview")
+    (previews_dir / "notes.txt").write_text("keep", encoding="utf-8")
 
     seed = CandidateSeed(
         candidate_id="candidate_001",
@@ -50,6 +55,7 @@ def test_candidate_writer_removes_stale_generated_contact_sheets(
     candidate = SegmentCandidate(seed, "selected", selected_frames=None)
     prepared = selector._PreparedCandidateRecord(
         record_id="record",
+        qualified_id="record",
         record_output=record_output,
         camera_dir=tmp_path / "camera",
         meta_action_path=tmp_path / "meta_action.json",
@@ -82,6 +88,20 @@ def test_candidate_writer_removes_stale_generated_contact_sheets(
         output_path.write_bytes(b"current image")
 
     monkeypatch.setattr(selector, "write_contact_sheet", write_contact_sheet)
+
+    def write_preview_video(
+        selected_frames: list[object],
+        decoded_frames: list[object],
+        output_path: Path,
+        *,
+        fps: float,
+        header_text: str,
+    ) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"current preview")
+        return output_path
+
+    monkeypatch.setattr(selector, "write_preview_video", write_preview_video)
     selector._write_candidate_outputs(
         prepared,
         history_sec=Decimal(2),
@@ -96,6 +116,9 @@ def test_candidate_writer_removes_stale_generated_contact_sheets(
 
     assert current_sheet.read_bytes() == b"current image"
     assert not stale_sheet.exists()
+    assert (record_output / "previews" / "candidate_001.mp4").read_bytes() == b"current preview"
+    assert not (record_output / "previews" / "candidate_002.mp4").exists()
+    assert (record_output / "previews" / "notes.txt").read_text(encoding="utf-8") == "keep"
     assert unrelated_file.read_text(encoding="utf-8") == "keep"
     assert reselected == [Decimal(10)]
 
@@ -106,7 +129,7 @@ def test_cli_reads_meta_action_from_separate_root_and_writes_candidates(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     input_root = tmp_path / "recordings"
-    camera_dir = input_root / "record_a" / "camera" / "front"
+    camera_dir = input_root / "record_a" / "camera" / "front_image"
     camera_dir.mkdir(parents=True)
     for index in range(29):
         timestamp = Decimal(1000) + Decimal(index) / 2
@@ -164,4 +187,12 @@ def test_cli_reads_meta_action_from_separate_root_and_writes_candidates(
     assert meta_action_path.is_file()
     assert not (output_root / "record_a" / "full_record_meta_action.json").exists()
     assert (output_root / "record_a" / selected_actions[0]["contact_sheet"]).is_file()
+    preview_path = output_root / "record_a" / selected_actions[0]["preview_video"]
+    assert preview_path.is_file()
+    capture = cv2.VideoCapture(str(preview_path))
+    try:
+        assert capture.isOpened()
+        assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 16
+    finally:
+        capture.release()
     assert "available 1 -> selected 1 (cap 500000; separation applied)" in capsys.readouterr().out

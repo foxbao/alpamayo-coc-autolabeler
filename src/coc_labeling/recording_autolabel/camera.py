@@ -30,6 +30,11 @@ import numpy as np
 from .types import MAX_FRAME_ERROR_SEC, SelectedFrame, TimedImage
 
 
+def front_camera_directory(record_dir: Path) -> Path:
+    """返回本地记录中的前视相机目录。"""
+    return record_dir / "camera" / "front_image"
+
+
 def _parse_filename_timestamp(path: Path) -> Decimal:
     """从图片文件名解析以秒为单位的时间戳。
 

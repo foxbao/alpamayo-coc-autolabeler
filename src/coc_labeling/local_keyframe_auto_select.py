@@ -12,7 +12,10 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
+from .data_loader.sample_dataset import DATASET_ROOTS, SampleDataset, SampleRecord
+from .local_output_paths import dated_output_dir
 from .recording_autolabel.camera import (
+    front_camera_directory,
     load_rgb_frames,
     load_timed_images,
     sample_offsets,
@@ -32,9 +35,12 @@ from .recording_autolabel.segment_candidates import (
     write_candidate_manifest,
 )
 from .recording_autolabel.types import LocalMotionChunk
-from .recording_autolabel.visualization import write_contact_sheet
+from .recording_autolabel.visualization import write_contact_sheet, write_preview_video
 
-DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "outputs" / "local_record_candidates"
+DEFAULT_OUTPUT_ROOT = dated_output_dir("local_record_candidates")
+DEFAULT_META_ACTION_ROOT = (
+    Path(__file__).resolve().parents[2] / "outputs" / "local_record_candidates"
+)
 
 
 @dataclass
@@ -42,6 +48,7 @@ class _PreparedCandidateRecord:
     """一条记录的候选计算结果，等待跨记录类别平衡后写出。"""
 
     record_id: str
+    qualified_id: str
     record_output: Path
     camera_dir: Path
     meta_action_path: Path
@@ -81,21 +88,27 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input-root",
         type=Path,
-        required=True,
-        help="Root directory containing local recording folders.",
+        help="Root containing record directories; use this or --dataset.",
     )
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--dataset", choices=sorted(DATASET_ROOTS))
+    parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+        help="Directory for this run's dated candidate outputs.",
+    )
     parser.add_argument(
         "--meta-action-root",
         type=Path,
-        help="Directory containing full_record_meta_action.json; defaults to --output-dir.",
+        default=DEFAULT_META_ACTION_ROOT,
+        help="Directory containing full_record_meta_action.json.",
     )
     parser.add_argument(
         "--record",
         nargs="+",
         help=(
-            "record directory names; omit to find generated meta-action files under "
-            "--meta-action-root (or --output-dir)"
+            "record names under --input-root, or qualified <batch>/<record> IDs with --dataset"
         ),
     )
     parser.add_argument(
@@ -186,19 +199,22 @@ def _prepare_clip_candidates(
     minimum_separation_sec: Decimal,
     minimum_action_duration_sec: Decimal = DEFAULT_MINIMUM_ACTION_DURATION_SEC,
     action_types: set[str] | None = None,
+    sample_record: SampleRecord | None = None,
 ) -> _PreparedCandidateRecord:
     """读取一条记录并准备候选；联系表和清单稍后统一写出。"""
-    record_dir = input_root / record_id
-    camera_dir = record_dir / "camera" / "front"
+    record_dir = sample_record.record_dir if sample_record else input_root / record_id
+    qualified_id = sample_record.qualified_id if sample_record else record_id
+    local_record_id = sample_record.record_id if sample_record else record_id
+    camera_dir = front_camera_directory(record_dir)
     if not record_dir.is_dir():
         raise FileNotFoundError(f"Record directory not found: {record_dir}")
 
-    meta_action_path = meta_action_root / record_id / "full_record_meta_action.json"
+    meta_action_path = meta_action_root / qualified_id / "full_record_meta_action.json"
     meta_action = load_full_record_meta_action(meta_action_path)
-    if meta_action.record_id != record_id:
+    if meta_action.record_id != local_record_id:
         raise ValueError(
             f"Meta-action record_id {meta_action.record_id!r} does not match "
-            f"requested record {record_id!r}: {meta_action_path}"
+            f"requested record {local_record_id!r}: {meta_action_path}"
         )
 
     camera_images = load_timed_images(camera_dir)
@@ -217,8 +233,9 @@ def _prepare_clip_candidates(
     )
 
     return _PreparedCandidateRecord(
-        record_id=record_id,
-        record_output=output_root / record_id,
+        record_id=local_record_id,
+        qualified_id=qualified_id,
+        record_output=output_root / qualified_id,
         camera_dir=camera_dir,
         meta_action_path=meta_action_path,
         localization_start=meta_action.localization_start,
@@ -245,6 +262,7 @@ def _write_candidate_outputs(
     record_id = prepared.record_id
     record_output = prepared.record_output
     contact_sheet_dir = record_output / "contact_sheets"
+    preview_dir = record_output / "previews"
     selected_candidates = [
         candidate for candidate in prepared.candidates if candidate.status == "selected"
     ]
@@ -276,6 +294,16 @@ def _write_candidate_outputs(
             contact_sheet_dir / f"{candidate.seed.candidate_id}.jpg",
             header_text=_contact_sheet_header(candidate),
         )
+        write_preview_video(
+            candidate.selected_frames,
+            decoded_frames,
+            preview_dir / f"{candidate.seed.candidate_id}.mp4",
+            fps=float(Decimal(1) / interval_sec),
+            header_text=(
+                f"{candidate.seed.candidate_id} | "
+                f"{candidate.seed.action_label or 'coverage'}"
+            ),
+        )
 
     manifest = candidate_manifest_payload(
         record_id,
@@ -292,6 +320,7 @@ def _write_candidate_outputs(
         action_types=action_types,
         action_target_count=action_target_count,
     )
+    manifest["qualified_record_id"] = prepared.qualified_id
     manifest_path = write_candidate_manifest(
         manifest,
         record_output / "segment_candidates.json",
@@ -300,6 +329,10 @@ def _write_candidate_outputs(
         for old_contact_sheet in contact_sheet_dir.glob("candidate_*.jpg"):
             if old_contact_sheet.stem not in selected_ids:
                 old_contact_sheet.unlink()
+    if preview_dir.is_dir():
+        for old_preview in preview_dir.glob("candidate_*.mp4"):
+            if old_preview.stem not in selected_ids:
+                old_preview.unlink()
     selected_action_count = sum(
         candidate.status == "selected" and candidate.seed.source == "action_span_start"
         for candidate in prepared.candidates
@@ -315,15 +348,44 @@ def _write_candidate_outputs(
     )
     print(f"  Meta-action: {prepared.meta_action_path}")
     print(f"  Candidate list: {manifest_path}")
+    if selected_ids:
+        print(f"  Contact sheets: {contact_sheet_dir}")
+        print(f"  Playable previews: {preview_dir}")
     return manifest_path
 
 
 def main() -> None:
     args = _parser().parse_args()
-    meta_action_root = args.meta_action_root or args.output_dir
-    records = _discover_records(meta_action_root, args.record)
+    meta_action_root = args.meta_action_root
+    if bool(args.dataset) == bool(args.input_root):
+        raise SystemExit("Specify exactly one of --dataset or --input-root")
+    records_by_id: dict[str, SampleRecord] = {}
+    if args.dataset:
+        dataset = SampleDataset(args.dataset, args.dataset_root)
+        sample_records = dataset.discover_records()
+        if args.record:
+            if len(args.record) != len(set(args.record)):
+                raise SystemExit("--record must not contain duplicate qualified IDs")
+            requested = set(args.record)
+            available = {record.qualified_id for record in sample_records}
+            missing = sorted(requested - available)
+            if missing:
+                raise SystemExit(f"Records not found in {args.dataset}: {', '.join(missing)}")
+            sample_records = [r for r in sample_records if r.qualified_id in requested]
+        else:
+            sample_records = [
+                record
+                for record in sample_records
+                if (meta_action_root / record.qualified_id / "full_record_meta_action.json").is_file()
+            ]
+        records_by_id = {record.qualified_id: record for record in sample_records}
+        records = [record.qualified_id for record in sample_records]
+    else:
+        if args.dataset_root:
+            raise SystemExit("--dataset-root requires --dataset")
+        records = _discover_records(meta_action_root, args.record)
     if not records:
-        raise SystemExit(f"No generated meta-action files found in {meta_action_root}")
+        raise SystemExit("No records found for candidate selection")
     history_sec, future_sec, interval_sec = _load_window_config()
 
     action_types = set(args.actions) if args.actions is not None else None
@@ -340,6 +402,7 @@ def main() -> None:
             args.minimum_separation_sec,
             args.minimum_action_duration_sec,
             action_types,
+            records_by_id.get(record_id),
         )
         for record_id in records
     ]
@@ -367,6 +430,7 @@ def main() -> None:
                 f"  {action}: available {available} -> selected {selected} "
                 f"(cap {args.target_count}; separation applied)"
             )
+    print(f"Candidate output directory: {args.output_dir}")
 
 
 if __name__ == "__main__":
