@@ -42,6 +42,7 @@ from .recording_autolabel.camera import (
     ImgLoader,
     LoadedImages,
     _parse_event_time,
+    front_camera_directory,
 )
 from .recording_autolabel.motion_loader import LocalMotionData, LocalMotionLoader
 from .recording_autolabel.position_artifacts import (
@@ -139,7 +140,7 @@ def _resolve_run_paths(args: argparse.Namespace) -> tuple[Path, Path, Path]:
     if not record_dir.is_dir():
         raise FileNotFoundError(f"Record directory not found: {record_dir}")
 
-    camera_dir = record_dir / "camera" / "front"
+    camera_dir = front_camera_directory(record_dir)
     localization_dir = record_dir / "localization"
     run_dir = args.output_dir / args.record / f"event_{args.event_time_sec!s}s"
     return camera_dir, localization_dir, run_dir
