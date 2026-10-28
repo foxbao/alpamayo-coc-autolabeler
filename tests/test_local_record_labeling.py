@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from coc_labeling.local_output_paths import dated_output_dir
 from coc_labeling.local_record_labeling import _load_selected_candidates, _record_directories
 
 
@@ -39,6 +40,16 @@ def test_load_selected_candidates_filters_and_reads_camera_relative_time(
 
     assert record_id == "record"
     assert candidates == [("candidate_001", Decimal("2.073690377"))]
+
+
+def test_dated_output_dir_groups_outputs_by_run_date() -> None:
+    from datetime import date
+
+    assert dated_output_dir("local_record_candidates", date(2026, 10, 27)).parts[-3:] == (
+        "outputs",
+        "20261027",
+        "local_record_candidates",
+    )
 
 
 def test_load_selected_candidates_rejects_non_selected_requested_id(tmp_path: Path) -> None:

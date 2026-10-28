@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from .local_output_paths import dated_output_dir
 from .local_record_autolabel import (
     DEFAULT_API_CONFIG,
     _load_temporal_config,
@@ -21,11 +22,11 @@ from .local_record_autolabel import (
     _update_manifest,
     _write_preparation_artifacts,
 )
-from .recording_autolabel.camera import load_timed_images
+from .recording_autolabel.camera import front_camera_directory, load_timed_images
 from .recording_autolabel.localization import load_localization_positions
 from .recording_autolabel.types import TimedImage, TimedPosition
 
-DEFAULT_CANDIDATE_ROOT = Path(__file__).resolve().parents[2] / "outputs" / "local_record_candidates"
+DEFAULT_CANDIDATE_ROOT = dated_output_dir("local_record_candidates")
 DEFAULT_LABEL_OUTPUT_ROOT = (
     Path(__file__).resolve().parents[2] / "outputs" / "local_record_autolabel_candidates"
 )
@@ -277,7 +278,7 @@ class LocalLabelingAgent:
         if not data_record_dir.is_dir():
             raise FileNotFoundError(f"Record directory not found: {data_record_dir}")
 
-        camera_dir = data_record_dir / "camera" / "front"
+        camera_dir = front_camera_directory(data_record_dir)
         localization_dir = data_record_dir / "localization"
         camera_images = load_timed_images(camera_dir)
         localization_positions = load_localization_positions(localization_dir)

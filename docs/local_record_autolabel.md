@@ -4,13 +4,13 @@
 
 ## 自动筛选整条记录中的 CoC 候选片段
 
-整段记录的动作生成和相机候选筛选分成两个命令。这样调整候选时间间距或覆盖频率时，可以重复第二步，不必重新读取 localization 和计算动作。两步默认共用 `outputs/local_record_candidates/`。
+整段记录的动作生成和相机候选筛选分成两个命令。这样调整候选时间间距或覆盖频率时，可以重复第二步，不必重新读取 localization 和计算动作。第一步把可复用的 meta-action 写入 `outputs/local_record_candidates/<record>/`；第二步默认把本次候选结果按运行日期写入 `outputs/YYYYMMDD/local_record_candidates/<record>/`。
 
 第一步只读取 localization，按 10 Hz 轨迹生成纵向动作点和区间：
 
 ```bash
 python -m coc_labeling.local_data_labeling \
-  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --input-root data/vla_kl/sample/20261019_lin_007_out \
   --record \
     20261019153841_record \
     20261019153911_record \
@@ -25,31 +25,31 @@ python -m coc_labeling.local_data_labeling \
 
 ```bash
 python -m coc_labeling.local_keyframe_auto_select \
-  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --input-root data/vla_kl/sample/20261019_lin_007_out \
   --meta-action-root outputs/local_record_candidates \
   --record \
     20261019153841_record \
     20261019153911_record \
     20261019153941_record \
-    20261019154011_record \
-  --output-dir outputs/local_record_candidates
+    20261019154011_record
 ```
 
-候选阶段不会重新读取 localization，也不会重新计算 meta-action。缺少 `full_record_meta_action.json` 时，命令会提示先运行 `python -m coc_labeling.local_data_labeling`。`--meta-action-root` 指定第一阶段动作 JSON 的目录，`--output-dir` 指定本阶段候选清单和联系表的输出目录；省略前者时仍使用 `--output-dir`，兼容原有命令。默认每 5 秒生成一个无动作类别的覆盖点，并严格要求最终保留的候选起点至少相隔 2 秒；动作区间起点优先于附近的覆盖点。这个间距规则不保证一个长动作的整个过程都会落在候选窗口中，靠近动作候选的覆盖点也可能被抑制。动作候选默认至少持续 1 秒（10 Hz 下 10 个 tick），也可以只保留指定类别，例如 `--actions "Gentle Deceleration" Stop`；这些筛选不会影响定时覆盖候选。可用 `--minimum-action-duration-sec` 调整动作时长门槛，也可用 `--periodic-interval-sec` 和 `--minimum-separation-sec` 调整覆盖频率及近邻间距。
+候选阶段不会重新读取 localization，也不会重新计算 meta-action。缺少 `full_record_meta_action.json` 时，命令会提示先运行 `python -m coc_labeling.local_data_labeling`。`--meta-action-root` 指定第一阶段动作 JSON 的目录；`--output-dir` 可指定候选输出目录，省略时会自动使用当天日期，例如 `outputs/20261027/local_record_candidates/`。默认每 5 秒生成一个无动作类别的覆盖点，并严格要求最终保留的候选起点至少相隔 2 秒；动作区间起点优先于附近的覆盖点。这个间距规则不保证一个长动作的整个过程都会落在候选窗口中，靠近动作候选的覆盖点也可能被抑制。动作候选默认至少持续 1 秒（10 Hz 下 10 个 tick），也可以只保留指定类别，例如 `--actions "Gentle Deceleration" Stop`；这些筛选不会影响定时覆盖候选。可用 `--minimum-action-duration-sec` 调整动作时长门槛，也可用 `--periodic-interval-sec` 和 `--minimum-separation-sec` 调整覆盖频率及近邻间距。
 
 候选筛选随后会像 PAI 的 `keyframe_auto_select` 一样按动作类别限制样本数：对本次命令处理的所有记录，先验证相机窗口，再为每个纵向动作类别最多保留 `--target-count` 个动作候选，并优先保留持续时间最长的区间，最后在每条记录内应用严格间距规则。如果区间较长的候选因间距规则被抑制，程序会从该类别超额候选中按时长回填与当前已选动作保持足够间距的候选。回填保留已选较长候选，不会回溯替换它们；因此这是类别上限，不保证填满。即使换成几条较短区间可以选满目标数，程序仍优先保留较长区间。默认值为 `500000`，与 PAI 一致，通常不会裁掉当前数据；可设为较小值做平衡抽样。仍被限额排除的项目会保留在清单中，状态为 `filtered`、原因是 `action_type_target_count_exceeded`。定时 `coverage` 候选不参加类别限额，但会遵守相同的起点间距规则。若显式传入 `--record`，类别限额只在这次指定的记录集合内统计。
 
 `--minimum-action-duration-sec` 是候选阶段额外施加的最短动作区间门槛，默认 1 秒。它独立于本地纵向动作分类器生成动作区间时使用的最短长度规则；某个区间即使已经被分类器识别，若短于这个候选门槛，仍不会成为 CoC 候选。
 
-每条记录的动作输入和候选输出都默认位于 `outputs/local_record_candidates/<record>/`；使用 `--meta-action-root` 和 `--output-dir` 可将它们分开放置：
+候选输出目录中，每条记录会有以下文件：
 
 ```text
-full_record_meta_action.json
-segment_candidates.json
-contact_sheets/candidate_*.jpg
+outputs/20261027/local_record_candidates/<record>/
+  segment_candidates.json
+  contact_sheets/candidate_*.jpg
+  previews/candidate_*.mp4
 ```
 
-`segment_candidates.json` 以 `action_candidates` 和 `coverage_candidates` 两个数组分别保存动作样本与覆盖样本。动作项会保留规则动作类别、区间起止时间和持续时长；覆盖项的动作类别与动作区间为空。每项也会记录筛选状态和原因，包括被选中、时长或类别过滤、相机窗口不完整、以及与其他候选过近而合并。重跑后，`contact_sheets/` 中不属于当前选中候选的旧 `candidate_*.jpg` 会被清理；其它文件会保留。候选 ID 按本次候选时间顺序生成，改变筛选参数后 ID 可能变化，应以当前 manifest 为准。这个流程用于发现值得人工检查的片段，不调用 GPT，也不直接生成 CoC 标签。
+`segment_candidates.json` 以 `action_candidates` 和 `coverage_candidates` 两个数组分别保存动作样本与覆盖样本。动作项会保留规则动作类别、区间起止时间和持续时长；覆盖项的动作类别与动作区间为空。每项也会记录筛选状态和原因，包括被选中、时长或类别过滤、相机窗口不完整、以及与其他候选过近而合并。选中的候选同时生成联系表和可播放 MP4：视频按图片采样间隔播放（默认 2 fps），画面上标有候选 ID、相对事件时间和源文件名。重跑后，`contact_sheets/` 和 `previews/` 中不属于当前选中候选的旧候选文件会被清理；其它文件会保留。候选 ID 按本次候选时间顺序生成，改变筛选参数后 ID 可能变化，应以当前 manifest 为准。这个流程用于发现值得人工检查的片段，不调用 GPT，也不直接生成 CoC 标签。
 
 ## 从候选生成 CoC 标注
 
@@ -58,30 +58,27 @@ contact_sheets/candidate_*.jpg
 ```bash
 # 对指定记录的全部 selected 候选只准备输入，不调用模型
 python -m coc_labeling.local_record_labeling \
-  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
-  --candidate-root outputs/local_record_candidates \
+  --input-root data/vla_kl/sample/20261019_lin_007_out \
   --record 20261019153941_record \
   --output-dir outputs/local_record_autolabel_candidates
 
 # 只准备动作区间候选；改成 coverage 可只准备定时覆盖候选
 python -m coc_labeling.local_record_labeling \
-  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
-  --candidate-root outputs/local_record_candidates \
+  --input-root data/vla_kl/sample/20261019_lin_007_out \
   --record 20261019153941_record \
   --candidate-type action_span \
   --output-dir outputs/local_action_span_labels
 
 # 先从 segment_candidates.json 选定 candidate ID，再只推理这一项
 python -m coc_labeling.local_record_labeling \
-  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
-  --candidate-root outputs/local_record_candidates \
+  --input-root data/vla_kl/sample/20261019_lin_007_out \
   --record 20261019153941_record \
   --candidate-id candidate_003 \
   --output-dir outputs/local_record_autolabel_candidates \
   --run-inference
 ```
 
-`--candidate-type` 可设为 `action_span`、`coverage` 或 `all`（默认）。它只控制从候选清单中选哪些事件进入标注，不改变 CoC 模型输入内容；选 `action_span` 时 GPT 仍会看到该事件周围图片、位置推导速度和逐图纵向动作提示。每个候选的相机相对时间直接取自候选清单；单事件入口仍按该时间匹配 16 张图片，并用对应 localization 准备运动数据。同一记录的图片时间表和 localization 文件只读取一次，再供该记录的所有候选复用。标注阶段会校验 manifest 记录的历史、未来和抽帧间隔与当前 CoC 配置一致；不一致时会要求重新筛选候选或恢复对应配置。输出结构与手动单事件标注一致，按记录和事件时间写在 `outputs/local_record_autolabel_candidates/<record>/event_<seconds>s/`。可用 `--record` 限定记录，也可用 `--candidate-id` 限定单个或多个候选；所选 ID 必须属于 `--candidate-type` 指定的候选池。添加 `--run-inference` 会对筛选出的每个候选各发送一次 API 请求并产生费用；未加该参数时不会读取 API 凭据。
+`--candidate-type` 可设为 `action_span`、`coverage` 或 `all`（默认）。它只控制从候选清单中选哪些事件进入标注，不改变 CoC 模型输入内容；选 `action_span` 时 GPT 仍会看到该事件周围图片、位置推导速度和逐图纵向动作提示。每个候选的相机相对时间直接取自候选清单；单事件入口仍按该时间匹配 16 张图片，并用对应 localization 准备运动数据。同一记录的图片时间表和 localization 文件只读取一次，再供该记录的所有候选复用。标注阶段会校验 manifest 记录的历史、未来和抽帧间隔与当前 CoC 配置一致；不一致时会要求重新筛选候选或恢复对应配置。候选根目录默认是当天的 `outputs/YYYYMMDD/local_record_candidates/`；若处理之前日期生成的结果，请用 `--candidate-root outputs/YYYYMMDD/local_record_candidates` 指向对应日期。标注输出结构与手动单事件标注一致，按记录和事件时间写在 `outputs/local_record_autolabel_candidates/<record>/event_<seconds>s/`。可用 `--record` 限定记录，也可用 `--candidate-id` 限定单个或多个候选；所选 ID 必须属于 `--candidate-type` 指定的候选池。添加 `--run-inference` 会对筛选出的每个候选各发送一次 API 请求并产生费用；未加该参数时不会读取 API 凭据。
 
 ## 准备预览
 
@@ -90,7 +87,7 @@ python -m coc_labeling.local_record_labeling \
 ```bash
 conda activate /mnt/disk1/conda_envs/alpamayo-coc
 python -m coc_labeling.local_record_autolabel \
-  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --input-root data/vla_kl/sample/20261019_lin_007_out \
   --record 20261019153941_record \
   --event-time-sec 21.6 \
   --output-dir outputs/local_record_autolabel_mvp
@@ -128,7 +125,7 @@ outputs/local_record_autolabel_mvp/<record>/event_<seconds>s/
 
 ```bash
 python -m coc_labeling.local_record_autolabel \
-  --input-root /home/baojiali/Downloads/disk3/20261019_lin_007_out \
+  --input-root data/vla_kl/sample/20261019_lin_007_out \
   --record 20261019153941_record \
   --event-time-sec 21.6 \
   --run-inference

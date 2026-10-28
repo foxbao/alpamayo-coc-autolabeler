@@ -128,6 +128,46 @@ def write_contact_sheet(
     return output_path
 
 
+def write_preview_video(
+    selected: Sequence[SelectedFrame],
+    frames: Sequence[np.ndarray],
+    output_path: Path,
+    *,
+    fps: float,
+    header_text: str | None = None,
+) -> Path:
+    """Write selected frames as a timestamped, playable MP4 preview."""
+    if len(selected) != len(frames) or not frames:
+        raise ValueError("Selected-frame metadata and image arrays must have equal non-zero length")
+    if fps <= 0:
+        raise ValueError("Preview frame rate must be positive")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    source_height, source_width = frames[0].shape[:2]
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (source_width, source_height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not create preview video: {output_path}")
+    try:
+        for item, frame in zip(selected, frames):
+            if frame.shape[:2] != (source_height, source_width):
+                frame = cv2.resize(frame, (source_width, source_height))
+            label_parts = []
+            if header_text:
+                label_parts.append(header_text)
+            label_parts.extend(
+                (f"t={item.relative_time:+.1f}s", f"source={item.image.path.name}")
+            )
+            writer.write(_annotate_frame(frame, " | ".join(label_parts)))
+    finally:
+        writer.release()
+    return output_path
+
+
 def write_previews(
     selected: Sequence[SelectedFrame], frames: Sequence[np.ndarray], output_dir: Path
 ) -> tuple[Path, Path]:
@@ -153,20 +193,9 @@ def write_previews(
     if not cv2.imwrite(str(contact_sheet), sheet):
         raise RuntimeError(f"Could not write contact sheet: {contact_sheet}")
 
-    height, width = normalized_frames[0].shape[:2]
     preview_video = output_dir / "preview.mp4"
     # 默认每 0.5 秒选一帧，因此 16 帧预览视频是 2 fps、8 秒。
-    writer = cv2.VideoWriter(
-        str(preview_video), cv2.VideoWriter_fourcc(*"mp4v"), 2.0, (width, height)
-    )
-    if not writer.isOpened():
-        raise RuntimeError(f"Could not create preview video: {preview_video}")
-    try:
-        for item, frame in zip(selected, normalized_frames):
-            label = f"t={item.relative_time:+.1f}s | source={item.image.path.name}"
-            writer.write(_annotate_frame(frame, label))
-    finally:
-        writer.release()
+    write_preview_video(selected, normalized_frames, preview_video, fps=2.0)
     return contact_sheet, preview_video
 
 

@@ -507,6 +507,7 @@ def candidate_manifest_payload(
         }
         if candidate.status == "selected" and candidate.selected_frames is not None:
             entry["contact_sheet"] = f"contact_sheets/{seed.candidate_id}.jpg"
+            entry["preview_video"] = f"previews/{seed.candidate_id}.mp4"
             entry["selected_frames"] = [
                 {
                     "relative_time_sec": str(frame.relative_time),
