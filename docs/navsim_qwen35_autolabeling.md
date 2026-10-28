@@ -30,12 +30,12 @@ NAVSIM user 输入（历史状态、导航命令、12 张相机图像）
 | --- | --- |
 | CoC 仓库 | `/home/baojiali/Downloads/public_code/alpamayo-coc-autolabeler` |
 | Qwen-Drive 仓库 | `/home/baojiali/Downloads/public_code/Qwen-Drive-1.0` |
-| Conda 环境 | `alpamayo-coc` |
+| Conda 环境 | 仓库内 `.conda-envs/alpamayo-coc` |
 | NAVSIM 场景 JSONL | `/cloud/cloud-ssd1/qwen-drive/datasets/navsim_trainval_v1.1/prepared/navsim_qwen_train_split.jsonl` |
 | NAVSIM 图像根目录 | `/cloud/cloud-ssd1/qwen-drive/datasets/navsim_trainval_v1.1` |
 | 本地模型缓存 | `/home/baojiali/.cache/alpamayo-coc-models` |
 | 当前模型 | `qwen3.5_35b`（Qwen3.5-35B-A3B） |
-| 当前 GPU | NVIDIA A800 80 GB |
+| 当前 GPU | 8 × NVIDIA GeForce RTX 4090 24 GB |
 
 这些绝对路径只适用于当前机器。AI 助手在其他机器上操作前，应先检查挂载和文件是否存在，不要假设路径相同。
 
@@ -44,24 +44,24 @@ NAVSIM user 输入（历史状态、导航命令、12 张相机图像）
 用下面的命令进入专用环境：
 
 ```bash
-conda activate alpamayo-coc
+conda activate /home/baojiali/Downloads/public_code/alpamayo-coc-autolabeler/.conda-envs/alpamayo-coc
 ```
 
 当前已验证版本：Python 3.12、PyTorch `2.10.0+cu128`、vLLM `0.17.1`、Transformers `4.57.6`。`torch.cuda.is_available()` 返回 `True`，并且 `from vllm import LLM` 可以导入。
 
 当前 CoC checkout 的 HEAD 是 `4dda809`。[`src/coc_labeling/model_clients/vlm_wrappers/qwen.py`](../src/coc_labeling/model_clients/vlm_wrappers/qwen.py) 有一项本地未提交修改：wrapper 从 `VLLM_MAX_MODEL_LEN` 读取上下文上限，默认仍为 128000。NAVSIM 脚本依赖这项修改将上下文限制为 32768；后续 AI 助手操作前应检查 `git status`，不要 reset 或覆盖这项修改。
 
-主机 NVIDIA 驱动和系统 CUDA 无需更改。当前 `nvidia-smi` 显示驱动 595.71.05、CUDA 13.2；Conda 环境中的 PyTorch wheel 自带 CUDA 12.8 运行库，两者可以共存。不要为了此项目升级/替换系统驱动或 `/usr/local/cuda`，也不要把 CoC 依赖装进 `qwen-drive` 环境。
+主机 NVIDIA 驱动和系统 CUDA 无需更改。当前 `nvidia-smi` 显示驱动 580.126.09、CUDA 13.0；Conda 环境中的 PyTorch wheel 自带 CUDA 12.8 运行库，两者可以共存。不要为了此项目升级/替换系统驱动或 `/usr/local/cuda`，也不要把 CoC 依赖装进 `qwen-drive` 环境。
 
 `qwen-drive` 环境单独维护，目前使用 PyTorch `2.8.0+cu128`。在 `alpamayo-coc` 中不应能导入 `qwen_drive`；两个环境的 PyTorch/vLLM 版本不同是预期的隔离结果。
 
 ### 从零重建环境
 
-当前环境已经建好，正常使用时只需要 `conda activate alpamayo-coc`。只有环境不存在时才执行创建命令：
+使用仓库内的 Conda 环境。首次创建后，在仓库根目录运行 `conda activate "$PWD/.conda-envs/alpamayo-coc"`：
 
 ```bash
-conda create -y -n alpamayo-coc python=3.12 pip
-conda activate alpamayo-coc
+conda create -y -p "$PWD/.conda-envs/alpamayo-coc" python=3.12 pip
+conda activate /home/baojiali/Downloads/public_code/alpamayo-coc-autolabeler/.conda-envs/alpamayo-coc
 cd /home/baojiali/Downloads/public_code/alpamayo-coc-autolabeler
 python -m pip install --no-cache-dir \
   --index-url https://download.pytorch.org/whl/cu128 \
@@ -98,7 +98,7 @@ CoC 的 Dockerfile 已说明 `trajdata` 声明的 `protobuf==3.19.4` 与锁文�
 ### 单条 smoke test
 
 ```bash
-conda activate alpamayo-coc
+conda activate /home/baojiali/Downloads/public_code/alpamayo-coc-autolabeler/.conda-envs/alpamayo-coc
 cd /home/baojiali/Downloads/public_code/Qwen-Drive-1.0
 python scripts/annotate_navsim_coc.py \
   --scenes /cloud/cloud-ssd1/qwen-drive/datasets/navsim_trainval_v1.1/prepared/navsim_qwen_train_split.jsonl \
@@ -115,7 +115,7 @@ python scripts/annotate_navsim_coc.py \
 下面的命令使用与当前 20 条运行相同的设置；输出目录采用新名字，避免覆盖已有结果：
 
 ```bash
-conda activate alpamayo-coc
+conda activate /home/baojiali/Downloads/public_code/alpamayo-coc-autolabeler/.conda-envs/alpamayo-coc
 cd /home/baojiali/Downloads/public_code/Qwen-Drive-1.0
 python scripts/annotate_navsim_coc.py \
   --scenes /cloud/cloud-ssd1/qwen-drive/datasets/navsim_trainval_v1.1/prepared/navsim_qwen_train_split.jsonl \
@@ -180,7 +180,7 @@ PY
 ## 给后续 AI 助手的操作约定
 
 1. 先读本手册、本仓库的 [`README.md`](../README.md) 和适配脚本，再决定下一步；不要把 NAVSIM 适配误当成上游原生 PAI 数据工作流。
-2. 使用 `conda activate alpamayo-coc`。不要在 `qwen-drive` 安装/升级 CoC、vLLM、PyTorch 或 Transformers，也不要更改系统 CUDA。
+2. 使用 `conda activate /home/baojiali/Downloads/public_code/alpamayo-coc-autolabeler/.conda-envs/alpamayo-coc`。不要在 `qwen-drive` 安装/升级 CoC、vLLM、PyTorch 或 Transformers，也不要更改系统 CUDA。
 3. 开始前确认数据、模型缓存、GPU 和输出目录。先跑 `--limit 1`，成功后再增加样本数；输出目录已存在时使用新目录名，不覆盖已有候选。
 4. 生成结果保持 `candidate_unreviewed`，先完成人工审核和质量评估，再讨论训练。不要把自动规则通过当作审核通过。
 5. 修改 NAVSIM 适配脚本或 CoC wrapper 时，说明改变了哪些输入、泄漏边界和输出格式，并重新做单条 smoke test。

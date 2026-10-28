@@ -38,7 +38,7 @@
 先在仓库根目录激活环境：
 
 ```bash
-conda activate alpamayo-coc
+conda activate "$PWD/.conda-envs/alpamayo-coc"
 ```
 
 先运行 `toy_01`–`toy_08`。然后按下面的顺序运行不加载大模型的课程：
@@ -58,7 +58,7 @@ python tutorials/19_handwrite_messages.py
 python tutorials/21_production_entry_dummy.py
 ```
 
-如果当前 shell 中没有 `python`，可以使用环境里的绝对路径 `/home/baojiali/anaconda3/envs/alpamayo-coc/bin/python`。
+如果当前 shell 中没有 `python`，可以使用环境里的绝对路径 `.conda-envs/alpamayo-coc/bin/python`。
 
 第 20 课会加载约 35B 参数的本地模型并占用 GPU，单独运行：
 
@@ -74,14 +74,14 @@ python tutorials/20_direct_real_vlm.py
 `tutorials/openai_api.example.yaml` 并填写本地 key，再运行：
 
 ```bash
-/home/baojiali/anaconda3/envs/alpamayo-coc/bin/python \
+.conda-envs/alpamayo-coc/bin/python \
   tutorials/22_direct_gpt_api.py
 ```
 
 也可以指定其它配置文件：
 
 ```bash
-/home/baojiali/anaconda3/envs/alpamayo-coc/bin/python \
+.conda-envs/alpamayo-coc/bin/python \
   tutorials/22_direct_gpt_api.py --config /path/to/openai_api.yaml
 ```
 
